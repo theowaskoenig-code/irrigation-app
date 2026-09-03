@@ -56,7 +56,7 @@ const V_STATE = { UNKNOWN: 0, CLOSED: 1, OPEN: 2, LIMP: 3 };
 
 async function createBackend() {
   let which = CONFIG.backend;
-  try { const q = new URLSearchParams(location.search).get('backend'); if (q === 'mock' || q === 'supabase') which = q; } catch (e) { /* ignore */ }
+  try { const q = new URLSearchParams(location.search).get('backend'); if (q === 'mock' || q === 'supabase' || q === 'lan') which = q; } catch (e) { /* ignore */ }
   if (which === 'supabase') return createSupabaseBackend(CONFIG);   // supabase.js, loaded as a plain script before this file
   if (which === 'lan')      return createLanBackend(CONFIG);        // lan.js — polls http://irrigation.local/api/state
   return createMockBackend(CONFIG);
