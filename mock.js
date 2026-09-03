@@ -97,7 +97,7 @@ function createMockBackend(config) {
     if (ctl.tempOK && ctl.tempC < MIN_TEMP) raise('frost', 'frost', 'info', null, `${ctl.tempC.toFixed(1)} °C — watering suspended below 3 °C`);
     else if (ctl.tempC > 5) clear('frost');
   }
-  raise('pot_refused:11', 'pot_refused', 'warn', 11, 'Pot 12 refused: implausible reading — sensor unplugged or broken');
+  raise('pot_refused:11', 'pot_refused', 'warn', 11, `Pot 12 refused: ${reasonText('implausible')}`);   // reasonText: backend.js
   state.alerts.push({ id: uid(), ts: now - 26 * 3600e3, key: 'offline', kind: 'offline', severity: 'critical', ch: null, message: 'Controller offline for 22 min', active: false, ackedAt: now - 25 * 3600e3 });
 
   // ---- sensing (evalCh) ----
@@ -195,11 +195,6 @@ function createMockBackend(config) {
     emit();
     return { watered, skipped, refused, tankLeft: ctl.tankLeft };
   }
-  function reasonText(r) {
-    return { off: 'switched off or not fitted', nopca: 'no PCA9685 — cannot move a valve', uncal: 'not calibrated', implausible: 'implausible reading — sensor unplugged or broken',
-      wet: 'wet enough, skipped', cold: 'too cold to water', tank: 'tank counter at the reserve', budget: 'daily budget already used', pump_disabled: 'pump is switched off',
-      cap: 'more than the pump can give in 90 s', aborted: 'aborted', bad_rules: 'the controller rejected the watering plan', no_plan: 'no such plan on the controller — apply the plan first', expired: 'expired — controller was offline', nosuch: 'no such pot' }[r] || r;
-  }
 
   // ---- command execution (handle()) ----
   // Postgres jsonb object key order (shorter keys first, then bytewise) — the cloud path hands the board the args in this order.
@@ -291,8 +286,8 @@ function createMockBackend(config) {
     emit();
     return new Promise((resolve) => {
       const attempt = () => {
-        if (offline) {                                            // controller not polling: wait or expire
-          if (rec.expiresAt && Date.now() > rec.expiresAt) { rec.status = 'expired'; rec.result = { reason: 'expired' }; emit(); resolve({ ...rec }); return; }
+        if (offline) {                                            // controller not polling: wait or expire (a never-expiring `stop` gives up after 40 min, review R3)
+          if ((rec.expiresAt && Date.now() > rec.expiresAt) || Date.now() - rec.createdAt > 40 * 60e3) { rec.status = 'expired'; rec.result = { reason: 'expired' }; emit(); resolve({ ...rec }); return; }
           setTimeout(attempt, 1000); return;
         }
         busy = busy.then(async () => {
@@ -375,7 +370,6 @@ function createMockBackend(config) {
         }
         return { days };
       },
-      reasonText,
     },
   };
 }

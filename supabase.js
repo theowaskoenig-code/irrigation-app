@@ -18,7 +18,7 @@ function createSupabaseBackend(config) {
   const id = config.deviceId;
   const raw = {};                         // last rows per table, as fetched
   const pending = new Map();              // command id → resolve (sendCommand waiting for the ack)
-  let sb = null, sess = null, state = null, channel = null, live = false, refreshing = Promise.resolve();
+  let sb = null, sess = null, state = null, channel = null, live = false, lastMsgAt = 0, refreshing = Promise.resolve();
   let stay = true;
   try { stay = sessionStorage.getItem('sb-stay') !== '0'; } catch (e) { /* private mode */ }
 
@@ -44,7 +44,7 @@ function createSupabaseBackend(config) {
   const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
   const mapCommand = (r) => ({ id: r.id, cmd: r.cmd, args: r.args || {}, status: r.status, createdAt: ms(r.created_at), ackedAt: ms(r.acked_at), expiresAt: ms(r.expires_at), result: r.result });
   const mapAlert = (r) => ({ id: r.id, ts: ms(r.ts), key: r.key, kind: r.kind, severity: r.severity, ch: r.ch, message: r.message, active: r.active, ackedAt: ms(r.acked_at) });
-  const mapEvent = (r) => ({ id: r.id, ts: ms(r.ts), kind: r.kind, ch: r.ch, ...(r.detail || {}) });
+  const mapEvent = (r) => ({ ...(r.detail || {}), id: r.id, ts: ms(r.ts), kind: r.kind, ch: r.ch });   // the row's own columns win over anything the device put in detail (review S5)
 
   // ---- one fetcher per table; each writes into raw[key]
   const fetchers = {
@@ -53,15 +53,28 @@ function createSupabaseBackend(config) {
     config: () => client().from('device_config').select('ts,payload').eq('device_id', id).maybeSingle(),
     alerts: () => client().from('alerts').select('*').eq('device_id', id).order('ts', { ascending: false }).limit(50),
     commands: () => client().from('commands').select('*').eq('device_id', id).order('created_at', { ascending: false }).limit(40),
-    events: () => client().from('events').select('*').eq('device_id', id).gte('ts', new Date(Date.now() - 15 * 86400e3).toISOString()).order('ts', { ascending: false }).limit(1000),
-    readings: () => client().from('readings').select('ts,tank_ml,temp_c').eq('device_id', id).gte('ts', new Date(Date.now() - 3 * 86400e3).toISOString()).order('ts', { ascending: true }).limit(1000),
+    // events and readings are fetched incrementally: only rows since the newest one already held (review R2); the first fetch keeps the 1000 cap
+    events: async () => {
+      const have = raw.events || [], since = have.length ? have[0].ts : new Date(Date.now() - 15 * 86400e3).toISOString();
+      const r = await client().from('events').select('*').eq('device_id', id).gte('ts', since).order('ts', { ascending: false }).limit(1000);
+      if (r.error) return r;
+      const seen = new Set(r.data.map(e => e.id));
+      return { data: r.data.concat(have.filter(e => !seen.has(e.id))).slice(0, 1000) };
+    },
+    readings: async () => {
+      const have = raw.readings || [], since = have.length ? have[have.length - 1].ts : new Date(Date.now() - 3 * 86400e3).toISOString();
+      const r = await client().from('readings').select('ts,tank_ml,temp_c').eq('device_id', id).gte('ts', since).order('ts', { ascending: true }).limit(1000);
+      if (r.error) return r;
+      const seen = new Set(r.data.map(x => x.ts)), cutoff = new Date(Date.now() - 3 * 86400e3).toISOString();
+      return { data: have.filter(x => !seen.has(x.ts) && x.ts >= cutoff).concat(r.data).slice(-1000) };
+    },
     household: () => client().from('household').select('*').eq('id', 1).maybeSingle(),
   };
   const ALL = Object.keys(fetchers);
 
   // Refetch the given tables (serialised), rebuild the State, tell the UI.
   function refresh(keys) {
-    refreshing = refreshing.then(async () => {
+    refreshing = refreshing.catch(() => {}).then(async () => {                    // one failed refresh must not block every later one (review B1)
       const results = await Promise.all(keys.map(k => fetchers[k]()));
       results.forEach((r, n) => { if (r.error) throw new Error(`${keys[n]}: ${r.error.message}`); raw[keys[n]] = r.data; });
       build(); emit();
@@ -127,13 +140,20 @@ function createSupabaseBackend(config) {
     if (channel) return;
     const c = client(), filter = `device_id=eq.${id}`;
     channel = c.channel('irrigation-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'device_state', filter }, () => refresh(['devices', 'state', 'readings']))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'device_config', filter }, () => refresh(['config']))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts', filter }, () => refresh(['alerts']))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'commands', filter }, (p) => { settle(p.new); refresh(['commands']); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'events', filter }, () => refresh(['events', 'devices']))
-      .subscribe((status) => { live = status === 'SUBSCRIBED'; });
-    setInterval(() => { refresh(live ? ['devices'] : ALL).catch(() => {}); }, 20000);   // polling fallback + liveness
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'device_state', filter }, () => { lastMsgAt = Date.now(); refresh(['devices', 'state', 'readings']).catch(() => {}); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'device_config', filter }, () => { lastMsgAt = Date.now(); refresh(['config']).catch(() => {}); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts', filter }, () => { lastMsgAt = Date.now(); refresh(['alerts']).catch(() => {}); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'commands', filter }, (p) => { lastMsgAt = Date.now(); settle(p.new); refresh(['commands']).catch(() => {}); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'events', filter }, () => { lastMsgAt = Date.now(); refresh(['events', 'devices']).catch(() => {}); })
+      .subscribe((status) => { live = status === 'SUBSCRIBED'; if (live) lastMsgAt = Date.now(); });   // CHANNEL_ERROR / CLOSED / TIMED_OUT → not live
+    // Polling fallback + liveness (review R1): the channel counts as live only while it delivered something in the last 2 minutes;
+    // otherwise every poll refetches everything (cheap: events/readings are incremental). A failed poll marks the cloud down.
+    setInterval(async () => {
+      const isLive = live && Date.now() - lastMsgAt < 120e3;
+      try { await refresh(isLive ? ['devices'] : ALL); }
+      catch (e) { if (state && !state.backendDown) { state.backendDown = true; emit(); } }
+    }, 20000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(ALL).catch(() => {}); });   // back from the background: full refresh
   }
 
   return {
@@ -164,11 +184,14 @@ function createSupabaseBackend(config) {
       refresh(['commands']).catch(() => {});
       return new Promise((resolve) => {
         pending.set(data.id, resolve);
-        const tick = async () => {                            // belt and braces next to the realtime UPDATE
+        const t0 = Date.now();
+        const tick = async () => {                            // belt and braces next to the realtime UPDATE; a failed poll is retried, never dropped (review A4)
           if (!pending.has(data.id)) return;
-          const { data: row } = await c.from('commands').select('*').eq('id', data.id).maybeSingle();
-          settle(row);
-          if (pending.has(data.id)) setTimeout(tick, 3000);
+          let row = null;
+          try { row = (await c.from('commands').select('*').eq('id', data.id).maybeSingle()).data; settle(row); } catch (e) { /* offline for a moment */ }
+          if (!pending.has(data.id)) return;
+          if (Date.now() - t0 > 40 * 60e3) { pending.delete(data.id); resolve(mapCommand(row || data)); return; }   // give up waiting after 40 min (a never-expiring `stop` included, review R3); the row keeps its state
+          setTimeout(tick, 3000);
         };
         setTimeout(tick, 3000);
       });
@@ -200,19 +223,19 @@ function createSupabaseBackend(config) {
     // fails, and the last 3 days held in state.readings/events are bucketed here instead, flagged `partial`.
     async history(days, endOffsetDays) {
       const c = client(), tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'Europe/Berlin', off = endOffsetDays || 0;
-      const DAY = 86400e3, d0 = new Date(); d0.setHours(0, 0, 0, 0); const from = d0.getTime() - (off + days - 1) * DAY, to = from + days * DAY;
+      const DAY = 86400e3, from = dayStart(Date.now(), -(off + days - 1)), to = dayStart(from, days);   // local midnights (DST-safe, review B8)
       const pEnd = new Date(to - 1).toISOString();                                             // the window's last day, local (history.sql p_end)
       const [rd, ds, rf] = await Promise.all([
-        c.rpc('history_readings', { p_dev: id, p_days: days, p_end: pEnd }),
+        c.rpc('history_readings', { p_dev: id, p_days: days, p_end: pEnd, p_tz: tz }),
         c.rpc('history_doses', { p_dev: id, p_days: days, p_tz: tz, p_end: pEnd }),
         c.from('events').select('ts').eq('device_id', id).eq('kind', 'refill').gte('ts', new Date(from).toISOString()).lt('ts', new Date(to).toISOString()).order('ts', { ascending: true }).limit(200),
       ]);
       if (rd.error || ds.error) {
         const h = historyFromLocal(state.readings, state.events, days, Date.now(), off);
-        h.partial = true; h.note = `Only the last 3 days — run app/supabase/history.sql once more (SETUP.md step 11; it gained the pan window). (${(rd.error || ds.error).message})`;
+        h.partial = true; h.note = `Only the last 3 days — run app/supabase/history.sql once more (SETUP.md step 11; it gained the pan window and the time zone). (${(rd.error || ds.error).message})`;
         return h;
       }
-      const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: from + i * DAY, ml: 0, n: 0 });
+      const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: dayStart(from, i), ml: 0, n: 0 });
       (ds.data || []).forEach(r => { const [y, m, d] = r.day.split('-').map(Number); const t = new Date(y, m - 1, d).getTime(); const i = Math.round((t - from) / DAY); if (i >= 0 && i < days) { perDay[i].ml = num(r.ml, 0); perDay[i].n = num(r.n, 0); } });
       const rows = rd.data || [];
       return { days, from, tank: rows.filter(r => r.tank_ml !== null).map(r => ({ ts: ms(r.ts), ml: r.tank_ml })), temp: rows.filter(r => r.temp_c !== null).map(r => ({ ts: ms(r.ts), c: r.temp_c })),

@@ -52,6 +52,8 @@ const CONFIG = {
 };
 // The address bar can override the choice: index.html?backend=mock shows the demo even on the
 // hosted app, ?backend=supabase tries the cloud even while CONFIG still says mock, ?backend=lan talks to the controller on the home WiFi.
+// ?backend=lan only works from a page that is NOT served over https (the double-clicked file, or http://…): a browser refuses
+// http://irrigation.local from an https page (mixed content), so the hosted app never offers it (review B5).
 
 const S_STATE = { NONE: 0, OK: 1, IMPLAUSIBLE: 2, UNCAL: 3 };
 const V_STATE = { UNKNOWN: 0, CLOSED: 1, OPEN: 2, LIMP: 3 };
@@ -66,6 +68,22 @@ async function createBackend() {
 
 // Helpers shared by UI and backends ------------------------------------------
 
+// Why the controller refused (result.reason / event.reason) in plain sentences — the one table for every backend (review B6/U2).
+const REASON_TEXT = {
+  off: 'this pot is switched off or not fitted', nopca: 'the valve driver is missing, no valve can move', uncal: 'the sensor is not calibrated',
+  implausible: 'the sensor gives no believable reading — unplugged or broken', wet: 'wet enough, skipped', cold: 'too cold to water',
+  tank: 'the tank counter is at the reserve', budget: 'the daily amount for today is used up', pump_disabled: 'the pump is switched off',
+  cap: 'more than the pump can give in 90 seconds', aborted: 'stopped before it finished', bad_rules: 'the controller did not accept the watering plan',
+  no_plan: 'the controller does not have this plan — apply it first', expired: 'expired, the controller was offline', nosuch: 'no such pot',
+  busy: 'the controller is busy — try again in a moment', not_in_lan_mode: 'not available on the home WiFi', timeout: 'no answer from the controller',
+  transport: 'the controller could not be reached', unknown_cmd: 'the controller does not know this command', bad_what: 'the controller does not know this part',
+};
+function reasonText(r) { return REASON_TEXT[r] || (r ? String(r) : 'no reason given'); }
+
+// Local midnight of the day that contains `ms`, shifted by `k` days — via the Date constructor, so a 23 or 25 hour DST day
+// stays one day (never "midnight + k × 24 h", review B8).
+function dayStart(ms, k) { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), d.getDate() + (k || 0)).getTime(); }
+
 // Controller freshness from lastSeen and the telemetry interval.
 function connState(device, now) {
   if (!device.lastSeen) return 'offline';
@@ -79,16 +97,16 @@ function connState(device, now) {
 // mock.js and lan.js use it directly; supabase.js uses it as the fallback while history.sql is not installed.
 // endOffsetDays: the window's last day is today − endOffsetDays (0 = today, negative = future days, which stay empty).
 function historyFromLocal(readings, events, days, now, endOffsetDays) {
-  const DAY = 86400e3, d0 = new Date(now); d0.setHours(0, 0, 0, 0);
-  const from = d0.getTime() - ((endOffsetDays || 0) + days - 1) * DAY, to = from + days * DAY, buckets = new Map();
+  const from = dayStart(now, -((endOffsetDays || 0) + days - 1)), to = dayStart(from, days), buckets = new Map();
   readings.forEach(r => {
     if (r.ts < from || r.ts >= to) return;
     const h = Math.floor(r.ts / 3600e3); let b = buckets.get(h); if (!b) buckets.set(h, b = { ts: h * 3600e3, ml: 0, n: 0, c: 0, nc: 0 });
     b.ml += r.tankLeft; b.n++; if (typeof r.tempC === 'number' && Number.isFinite(r.tempC)) { b.c += r.tempC; b.nc++; }
   });
   const bs = [...buckets.values()].sort((a, b) => a.ts - b.ts);
-  const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: from + i * DAY, ml: 0, n: 0 });
-  events.forEach(e => { if (e.kind === 'dose' && e.ts >= from && e.ts < to) { const d = perDay[Math.floor((e.ts - from) / DAY)]; d.ml += e.ml || 0; d.n++; } });
+  const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: dayStart(from, i), ml: 0, n: 0 });
+  const dayIdx = (ts) => { let i = days - 1; while (i > 0 && ts < perDay[i].day) i--; return i; };
+  events.forEach(e => { if (e.kind === 'dose' && e.ts >= from && e.ts < to) { const d = perDay[dayIdx(e.ts)]; d.ml += e.ml || 0; d.n++; } });
   return { days, from, tank: bs.map(b => ({ ts: b.ts, ml: Math.round(b.ml / b.n) })), temp: bs.filter(b => b.nc).map(b => ({ ts: b.ts, c: +(b.c / b.nc).toFixed(1) })),
     perDay, refills: events.filter(e => e.kind === 'refill' && e.ts >= from && e.ts < to).map(e => e.ts).sort((a, b) => a - b) };
 }
@@ -101,3 +119,5 @@ function dailyUseML(events, now) {
   const spanDays = Math.max(1, (now - Math.min(...doses.map(e => e.ts))) / 86400e3);
   return doses.reduce((s, e) => s + (e.ml || 0), 0) / spanDays;
 }
+
+if (typeof module !== 'undefined') module.exports = { connState, historyFromLocal, dailyUseML, reasonText, dayStart };   // backend.test.js

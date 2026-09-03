@@ -14,17 +14,19 @@
 
 const RU = { rules: null, sel: 'a', loaded: false, pv: {}, applied: null, custom: false };   // custom = the "Custom" dose chip was tapped (field shown even while the dose is still 250/900) · pv[planId] = { local, ctl, at } — the last Preview · applied = { appliedHash, localHash } from the last acked Apply
 const RU_TIMES = ['07:00', '19:00'];
-const RU_WHY = { wet: 'wet', off: 'off', implausible: 'implausible', uncal: 'not calibrated', budget: 'daily budget used', cold: 'frost', tank: 'tank at reserve', nopca: 'no valve driver' };
+const RU_WHY = { wet: 'wet', off: 'off', implausible: 'sensor fault', uncal: 'not calibrated', budget: 'daily amount used', cold: 'frost', tank: 'tank at reserve', nopca: 'no valve driver' };
 
 // ---------------------------------------------------------------- draft state (localStorage; a v1 draft is migrated once)
+// v1 drafts (`{"v":1, schedule, pots, modifiers, limits}`) existed only on 2026-09-03, before the plans screen; the migration below
+// and Rules.migrate() can be deleted after 2026-10-01 — every phone that used the app will have loaded the draft once by then.
 function ruLoad() {
   if (RU.loaded) return; RU.loaded = true;
   let r = null;
   try {
     const j = localStorage.getItem('planDraft');
     if (j) {
-      const res = Rules.fromJSON(j); if (res.ok) r = res.rules;
-      if (r && JSON.parse(j).v === 1) {                       // the v1 screen kept its "follow" values next to the draft
+      const doc = JSON.parse(j), res = Rules.fromJSON(doc); if (res.ok) r = res.rules;
+      if (r && doc.v === 1) {                                 // the v1 screen kept its "follow" values next to the draft
         const d = JSON.parse(localStorage.getItem('planDefaults') || 'null');
         if (d && Number.isInteger(d.thr) && Number.isInteger(d.dose)) { r.plans[0].thr = d.thr; r.plans[0].dose = d.dose; }
         localStorage.removeItem('planDefaults'); localStorage.removeItem('rulesDraft');
@@ -153,7 +155,7 @@ function renderRules() {
     </div>
     <div class="card section">
       <div class="ru-preview">${esc(ruPreviewText(p))}</div>
-      <div class="btn-row"><button class="btn" data-ru="preview">Preview</button><button class="btn" data-ru="run">Run now</button></div>
+      <div class="btn-row"><button class="btn" data-ru="preview">Preview</button><button class="btn" data-ru="run"${dis('plan_run')}>Run now</button></div>
       ${pv ? `<div class="ru-would">${ruWouldText(pv.ctl || pv.local)}<div class="faint" style="font-size:13px;margin-top:4px">${esc(src)}</div></div>` : ''}
       <div class="row"><strong>Controller</strong>${chip(st.cls, st.label)}</div>
       <button class="btn primary block" data-ru="send">Apply on the controller</button>
@@ -237,5 +239,10 @@ function ruInput(e) {
   const lbl = $('#ru-thr-val'); if (lbl) lbl.textContent = el.value;
 }
 document.addEventListener('click', ruClick);
+document.addEventListener('keydown', (e) => {                                   // a plan row is a button: Enter / Space select it like a tap (review U6)
+  const el = e.target && e.target.closest ? e.target.closest('.ru-plan[data-ru="plan-sel"]') : null;
+  if (!el || (e.key !== 'Enter' && e.key !== ' ')) return;
+  e.preventDefault(); RU.sel = el.dataset.v; RU.custom = false; render();
+});
 document.addEventListener('change', ruChange);
 document.addEventListener('input', ruInput);

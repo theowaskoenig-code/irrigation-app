@@ -67,8 +67,9 @@ function createLanBackend(config) {
   const HARD_REFUSALS = new Set(['implausible', 'uncal', 'budget', 'nopca']);
   const subs = new Set();
   let host = config.lanHost || 'irrigation.local';
-  try { const q = new URLSearchParams(location.search).get('host'); const s = localStorage.getItem('lanHost'); host = q || s || host; if (q) localStorage.setItem('lanHost', q); } catch (e) { /* file:// private mode etc. */ }
+  try { const q = new URLSearchParams(location.search).get('host'), s = localStorage.getItem('lanHost'); const ok = (h) => h && /^[\w.-]+(:\d+)?$/.test(h); host = ok(q) ? q : ok(s) ? s : host; if (ok(q)) localStorage.setItem('lanHost', q); } catch (e) { /* file:// private mode etc. */ }
   let askedForHost = false, misses = 0, pollTimer = null, lastReadingAt = 0, seq = 0, firstPollDone = false;
+  const HOST_OK = /^[\w.-]+(:\d+)?$/;
 
   const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* ignore */ } };
@@ -171,11 +172,6 @@ function createLanBackend(config) {
     // offline is handled in poll()
     state.alerts.sort((a, b) => b.ts - a.ts); if (state.alerts.length > 60) state.alerts.length = 60;
   }
-  function reasonText(r) {
-    return { off: 'switched off or not fitted', nopca: 'no PCA9685 — cannot move a valve', uncal: 'not calibrated', implausible: 'implausible reading — sensor unplugged or broken',
-      wet: 'wet enough, skipped', cold: 'too cold to water', tank: 'tank counter at the reserve', budget: 'daily budget already used', pump_disabled: 'pump is switched off',
-      aborted: 'aborted', busy: 'controller busy — try again in a moment', not_in_lan_mode: 'not available in LAN mode', nosuch: 'no such pot', timeout: 'no answer from the controller' }[r] || r;
-  }
 
   // ---------------------------------------------------------------- polling
   function emit() { const s = getState(); subs.forEach(fn => fn(s)); }
@@ -194,7 +190,7 @@ function createLanBackend(config) {
       if (misses === 5 && !askedForHost) {
         askedForHost = true;
         const ip = typeof prompt === 'function' ? prompt(`No answer from http://${host}/ — type the controller's IP address (it prints it on the serial console, or type  wifi  there). Leave empty to keep trying.`, '') : '';
-        if (ip && ip.trim()) { host = ip.trim(); lsSet('lanHost', host); state.device.ip = host; misses = 0; }
+        if (ip && HOST_OK.test(ip.trim())) { host = ip.trim(); lsSet('lanHost', host); state.device.ip = host; misses = 0; }   // a host name or IP, optional :port — nothing else (review R4)
       }
     }
     emit();
@@ -293,8 +289,6 @@ function createLanBackend(config) {
     async login() { return { email: 'local network' }; },
     async logout() {},
     session() { return { email: 'local network' }; },   // always signed in: whoever is on the WiFi can reach the board
-    // app.js uses backend.mock.reasonText when present; isMock stays false so the mock-only controls stay hidden.
-    mock: { reasonText },
-    lan: { host: () => host, setHost(h) { host = String(h).trim() || host; lsSet('lanHost', host); misses = 0; }, stop() { clearInterval(pollTimer); } },
+    lan: { host: () => host, setHost(h) { h = String(h).trim(); if (HOST_OK.test(h)) { host = h; lsSet('lanHost', host); misses = 0; } }, stop() { clearInterval(pollTimer); } },
   };
 }

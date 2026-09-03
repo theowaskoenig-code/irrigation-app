@@ -83,6 +83,7 @@ function hash(str) {
 // The most common value in a list (ties → first seen), or `d` for an empty list.
 function mode(list, d) { const c = {}; let best = d, n = 0; list.forEach(v => { c[v] = (c[v] || 0) + 1; if (c[v] > n) { n = c[v]; best = v; } }); return best; }
 // migrate(v1) → v2: one plan "Default" (mode dry) from schedule[0] and the majority thr/dose in pots{}; `on:false` pots → "off".
+// v1 drafts existed only on 2026-09-03 (the text-rules screen, replaced the same day) — delete migrate() and the v1 branch in fromJSON() after 2026-10-01.
 // Per-pot thr/dose exceptions and the temp/rain/tank modifiers have no v2 equivalent and are dropped.
 function migrate(v1) {
   const s = (v1.schedule || [])[0], pots = v1.pots || {};

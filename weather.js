@@ -69,3 +69,4 @@ const Weather = (() => {
   function error(household) { const k = key(loc(household)); return cache && cache.key === k ? cache.err : null; }
   return { DEFAULT_LOC, loc, get, ensure, error, fake, summarise, dayNight };
 })();
+if (typeof module !== 'undefined') module.exports = Weather;   // backend.test.js
