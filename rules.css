@@ -14,6 +14,7 @@
 .ru-chip { min-height: 44px; padding: 6px 12px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-weight: 700; font-size: 15px; }
 .ru-chip.sm { min-height: 40px; min-width: 44px; padding: 4px 8px; }
 .ru-chip.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.ru-chip.dim { color: var(--text-3); border-style: dashed; }   /* a pot set "off" in the Which-pots chips; a tap puts it on the plan */
 .ru-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 16px; line-height: 1.3; }
 .ru-line input[type="number"] { width: 88px; min-height: 44px; padding: 6px 8px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: right; }
 .ru-line select, .ru-line input[type="time"] { min-height: 44px; padding: 6px 8px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); }

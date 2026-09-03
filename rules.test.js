@@ -105,6 +105,14 @@ eq('planOf default', R.planOf(DOC, 5).id, 'a');
 eq('potsOf a', R.potsOf(DOC, 'a', 16), [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15]);
 eq('potsOf b clipped to fitted', R.potsOf(DOC, 'b', 2), []);
 eq('potsOf off', R.potsOf(DOC, 'off', 16), [11]);
+// togglePot: pure, and a pot belongs to exactly one plan
+eq('toggle: default pot onto b', R.togglePot(DOC, 5, 'b'), { 2: 'b', 5: 'b', 11: 'off' });
+eq('toggle: b pot tapped on b → back to the default', R.togglePot(DOC, 2, 'b'), { 11: 'off' });
+eq('toggle: b pot tapped on a (default) → moves, entry omitted', R.togglePot(DOC, 2, 'a'), { 11: 'off' });
+eq('toggle: default pot tapped on the default → stays', R.togglePot(DOC, 5, 'a'), { 2: 'b', 11: 'off' });
+eq('toggle: off pot re-enabled into b', R.togglePot(DOC, 11, 'b'), { 2: 'b', 11: 'b' });
+eq('toggle: off pot re-enabled into the default', R.togglePot(DOC, 11, 'a'), { 2: 'b' });
+eq('toggle: does not touch the input', DOC.pots, { 2: 'b', 11: 'off' });
 eq('nextId', R.nextId(DOC), 'c');
 eq('nextId full', R.nextId({ plans: R.IDS.map(id => ({ id })) }), null);
 eq('defaultPlan', R.defaultPlan('c', 'Herbs'), { id: 'c', name: 'Herbs', when: { times: ['07:00', '19:00'] }, mode: 'dry', thr: 35, dose: 250, dailyML: 6000 });

@@ -108,6 +108,16 @@ function planById(rules, id) { return (rules.plans || []).find(p => p.id === id)
 function potPlanId(rules, ch) { const v = rules.pots ? rules.pots[ch] : undefined; return v === undefined ? rules.default : v; }
 function planOf(rules, ch) { const id = potPlanId(rules, ch); return id === 'off' ? null : planById(rules, id); }
 function potsOf(rules, id, nFitted) { const out = []; for (let i = 0; i < nFitted; i++) if (potPlanId(rules, i) === id) out.push(i); return out; }
+// togglePot(rules, ch, id) → the pots{} after a tap on pot ch in plan id's "Which pots" chips (pure: rules is not touched).
+// A pot belongs to exactly one plan: on another plan or "off" → it moves here; on this plan → back to the default
+// (on the default plan it simply stays). Entries equal to the default are omitted, as compile() expects.
+function togglePot(rules, ch, id) {
+  const pots = Object.assign({}, rules.pots || {}), cur = potPlanId(rules, ch);
+  if (cur === id && id === rules.default) return pots;        // already on the default: nothing to go back to
+  if (cur === id || id === rules.default) delete pots[ch];    // leave this plan → the default · move onto the default
+  else pots[ch] = id;                                          // move here from another plan or from "off"
+  return pots;
+}
 function nextId(rules) { return IDS.find(id => !planById(rules, id)) || null; }
 
 // ---------------------------------------------------------------- triggers
@@ -222,6 +232,6 @@ function worldFrom(state, nowMs) {
 }
 
 const Rules = { LIM, IDS, DOSE_WORD, POT_BUDGET_DOSES, doseKind, isOn, empty, defaultPlan, validate, normalize, compile, hash, migrate, fromJSON,
-  planById, potPlanId, planOf, potsOf, nextId, triggersBetween, nextTrigger, decide, preview, simulate, worldFrom, planStatus };
+  planById, potPlanId, planOf, potsOf, togglePot, nextId, triggersBetween, nextTrigger, decide, preview, simulate, worldFrom, planStatus };
 if (typeof module !== 'undefined' && module.exports) module.exports = Rules; else root.Rules = Rules;
 })(typeof window !== 'undefined' ? window : globalThis);

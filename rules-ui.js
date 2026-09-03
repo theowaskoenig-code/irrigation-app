@@ -3,13 +3,14 @@
 // waters every time except when the soil is too wet, and a test button.)
 //   Plans      — up to four, one is the default; rename · duplicate · delete · make default
 //   When       — times as chips (max 4) or "every N hours"          (per plan)
+//   Which pots — one chip per fitted pot; tap = onto this plan, tap again = back to the default (Rules.togglePot)
 //   Mode       — When dry (water pots drier than X %) · Every time (water all, skip pots wetter than X %)
 //   How much   — small 250 mL / large 900 mL / custom 10–2000 mL    (per plan)
 //   On/off     — a switch per plan in the overview list at the top   (per plan; `on:false` in the JSON, firmware 0.4.2)
 //   Daily cap  — litres per day for the pots on the plan            (per plan)
 // plus a preview line, Preview (what a round would do right now), Run now, and "Apply on the controller".
 // The draft is a `rules v2` object (rules.js) and travels whole as the `rules` command; a pot's plan is chosen in the
-// pot sheet / Settings (ruPlanOptions, ruSetPot) and written into pots{}.
+// pot sheet / Settings (ruPlanOptions, ruSetPot) or with the Which-pots chips and written into pots{}.
 // Uses app.js globals ($, esc, state, sheet, backend, cmd, render, potName, chip, toast, when) and Rules from rules.js.
 
 const RU = { rules: null, sel: 'a', loaded: false, pv: {}, applied: null, custom: false };   // custom = the "Custom" dose chip was tapped (field shown even while the dose is still 250/900) · pv[planId] = { local, ctl, at } — the last Preview · applied = { appliedHash, localHash } from the last acked Apply
@@ -134,9 +135,13 @@ function renderRules() {
       ${r.plans.length < Rules.LIM.nPlans ? `<div class="ru-chips">${ruChip(false, 'plan-new', '', '+ New plan')}</div>` : ''}
       <div class="inline"><div class="field"><label for="ru-name">Name</label><input id="ru-name" type="text" maxlength="16" value="${esc(p.name)}" data-ru="plan-name"></div>
         <div class="btn-row">${isDef ? '' : '<button class="btn" data-ru="plan-default">Make default</button>'}${r.plans.length < Rules.LIM.nPlans ? '<button class="btn" data-ru="plan-dup">Duplicate</button>' : ''}${isDef ? '' : '<button class="btn danger-outline" data-ru="plan-del">Delete</button>'}</div></div>
-      <div class="faint" style="font-size:14px">${isDef ? 'The default: every pot without its own choice follows it.' : 'Pots choose this plan in the pot sheet or in Settings.'} On this plan${on.length ? ` (${on.length}): ${on.map(q => esc(potName(q.i))).join(', ')}` : ': no pot yet'}.</div>
+      <div class="faint" style="font-size:14px">${isDef ? 'The default: every pot without its own choice follows it.' : 'Pots choose this plan below (Which pots), in the pot sheet or in Settings.'} On this plan${on.length ? ` (${on.length}): ${on.map(q => esc(potName(q.i))).join(', ')}` : ': no pot yet'}.</div>
     </div>
     <div class="card section"><h2>When</h2>${whenBody}</div>
+    <div class="card section"><h2>Which pots</h2>
+      <div class="ru-chips">${ruFitted().map(q => { const id = Rules.potPlanId(r, q.i), here = id === p.id; return `<button class="ru-chip${here ? ' active' : id === 'off' ? ' dim' : ''}" aria-pressed="${here}" data-ru="pot" data-v="${q.i}">${esc(potName(q.i))}${here ? '' : `<small>${id === 'off' ? 'off' : id.toUpperCase()}</small>`}</button>`; }).join('') || '<span class="faint">no pot fitted</span>'}</div>
+      <div class="faint" style="font-size:14px">Tap a pot to put it on this plan, tap again to send it back to the default. Pots not assigned to any plan follow the default plan; "off" pots are never watered.</div>
+    </div>
     <div class="card section"><h2>Watering mode</h2>
       <div class="ru-modes" role="radiogroup" aria-label="Watering mode">
         <button class="ru-mode ${p.mode === 'dry' ? 'active' : ''}" role="radio" aria-checked="${p.mode === 'dry'}" data-ru="mode" data-v="dry"><b>When dry</b><span>only pots below the moisture line get water</span></button>
@@ -215,6 +220,7 @@ function ruClick(e) {
     case 'sched-time': { if (p.when.everyMin) break; const i = p.when.times.indexOf(v); if (i >= 0) { if (p.when.times.length === 1) { toast('Keep at least one time, or switch to "Every N hours"'); break; } p.when.times.splice(i, 1); } else if (p.when.times.length < 4) p.when.times.push(v); else { toast('At most 4 times a day'); break; } ruCommit(); break; }
     case 'sched-time-add': { const t = $('#ru-time').value; if (!/^\d\d:\d\d$/.test(t)) { toast('Pick a time first'); break; } if (p.when.everyMin) break; if (!p.when.times.includes(t)) { if (p.when.times.length >= 4) { toast('At most 4 times a day'); break; } p.when.times.push(t); } ruCommit(); break; }
     case 'sched-mode': p.when = v === 'interval' ? { everyMin: 720 } : { times: RU_TIMES.slice() }; ruCommit(); break;
+    case 'pot': RU.rules.pots = Rules.togglePot(RU.rules, +v, p.id); ruCommit(); break;
     case 'mode': p.mode = v === 'always' ? 'always' : 'dry'; ruCommit(); break;
     case 'dose': p.dose = +v; RU.custom = false; ruCommit(); break;
     case 'dose-custom': RU.custom = true; render(); setTimeout(() => { const f = $('#ru-dose'); if (f) { f.focus(); f.select(); } }, 0); break;
