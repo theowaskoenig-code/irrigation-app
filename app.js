@@ -66,7 +66,7 @@ function valveText(p) {
   const t = state.telemetry;
   if (p.i >= t.nServos) return 'not fitted';
   if (!p.valEn) return 'off';
-  return ['?', 'closed', 'OPEN', 'limp'][p.vState] || '?';
+  return ['unknown', 'closed · holding', 'OPEN', 'closed'][p.vState] || 'unknown';   // 3 = closed and limp (the cam holds); 0 = not tracked since the last reset
 }
 function dailyUse() { return dailyUseML(state.events, Date.now()); }
 function daysLeft() { const u = dailyUse(); return u ? (state.telemetry.tankLeft - state.config.tankReserve) / u : null; }
