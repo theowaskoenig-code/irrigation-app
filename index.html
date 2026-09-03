@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0e42aa">
+<title>Balcony</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="title"><h1>Balcony</h1><span class="sub">selective irrigation</span></div>
+    <div class="conn" id="conn"><span class="dot"></span><span>…</span></div>
+  </header>
+  <main>
+    <section class="screen active" id="screen-glance"></section>
+    <section class="screen" id="screen-pots"></section>
+    <section class="screen" id="screen-tank"></section>
+    <section class="screen" id="screen-alerts"></section>
+    <section class="screen" id="screen-control"></section>
+    <section class="screen" id="screen-settings"></section>
+  </main>
+  <nav class="nav" aria-label="Sections">
+    <button data-screen="glance"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Glance</button>
+    <button data-screen="pots"><svg viewBox="0 0 24 24"><path d="M5 9h14l-1.5 11h-11z"/><path d="M12 9V4M9 6c1 1 2 1 3 0 1 1 2 1 3 0"/></svg>Pots</button>
+    <button data-screen="tank"><svg viewBox="0 0 24 24"><path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/></svg>Tank</button>
+    <button data-screen="alerts"><svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>Alerts<span class="badge" id="badge-alerts" hidden></span></button>
+    <button data-screen="control"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Control</button>
+    <button data-screen="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
+  </nav>
+</div>
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="sheet"></div>
+<div class="toast" id="toast"></div>
+<!-- login: shown only with the real backend and no saved session (app.js main) -->
+<div class="login" id="login" hidden>
+  <form class="card" id="login-form" novalidate>
+    <h2>Balcony — sign in</h2>
+    <div class="field"><label for="login-email">Email</label><input id="login-email" type="email" autocomplete="username" required></div>
+    <div class="field"><label for="login-pw">Password</label><input id="login-pw" type="password" autocomplete="current-password" required></div>
+    <label class="check"><input type="checkbox" id="login-stay" checked> Stay signed in on this device</label>
+    <div class="danger-text" id="login-err" role="alert"></div>
+    <button class="btn primary block" type="submit">Sign in</button>
+  </form>
+</div>
+<!-- plain scripts (no modules) so the file opens by double-click from Finder as well as over http -->
+<script src="mock.js"></script>
+<script src="lan.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.114.0/dist/umd/supabase.min.js"></script>
+<script src="supabase.js"></script>
+<script src="backend.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
