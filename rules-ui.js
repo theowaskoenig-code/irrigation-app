@@ -11,7 +11,7 @@
 // pot sheet / Settings (ruPlanOptions, ruSetPot) and written into pots{}.
 // Uses app.js globals ($, esc, state, sheet, backend, cmd, render, potName, chip, toast, when) and Rules from rules.js.
 
-const RU = { rules: null, sel: 'a', loaded: false, pv: {} };   // pv[planId] = { local, ctl, at } — the last Preview
+const RU = { rules: null, sel: 'a', loaded: false, pv: {}, applied: null };   // pv[planId] = { local, ctl, at } — the last Preview · applied = { appliedHash, localHash } from the last acked Apply
 const RU_TIMES = ['07:00', '19:00'];
 const RU_WHY = { wet: 'wet', off: 'off', implausible: 'implausible', uncal: 'not calibrated', budget: 'daily budget used', cold: 'frost', tank: 'tank at reserve', nopca: 'no valve driver' };
 
@@ -29,21 +29,17 @@ function ruLoad() {
         localStorage.removeItem('planDefaults'); localStorage.removeItem('rulesDraft');
       }
     }
+    const a = JSON.parse(localStorage.getItem('planApplied') || 'null');
+    if (a && typeof a.appliedHash === 'string' && typeof a.localHash === 'string') RU.applied = a;
   } catch (e) { /* file:// or private mode */ }
   RU.rules = r || Rules.empty();
   RU.sel = RU.rules.default;
   ruSave();
 }
-function ruSave() { try { localStorage.setItem('planDraft', Rules.compile(RU.rules)); } catch (e) { /* ignore */ } }
+function ruSave() { try { localStorage.setItem('planDraft', Rules.compile(RU.rules)); localStorage.setItem('planApplied', JSON.stringify(RU.applied)); } catch (e) { /* ignore */ } }
 function ruCommit() { RU.rules = Rules.normalize(RU.rules); RU.pv = {}; ruSave(); render(); }
 function ruJson() { return Rules.compile(RU.rules); }
-function ruStatus() {
-  const h = state.telemetry.rulesHash;
-  if (h === undefined) return { cls: 'uncal', label: 'controller cannot take a plan yet' };     // firmware before the watering plan
-  if (!h) return { cls: 'off', label: 'controller has no plan' };
-  if (h === Rules.hash(ruJson())) return { cls: 'info', label: 'controller uses this plan' };
-  return { cls: 'warn', label: 'changes not applied yet' };
-}
+function ruStatus() { return Rules.planStatus(state.telemetry.rulesHash, RU.applied, Rules.hash(ruJson())); }   // the board's own hash vs what this phone applied (rules.js planStatus)
 function ruPlan() { return Rules.planById(RU.rules, RU.sel) || Rules.planById(RU.rules, RU.rules.default); }
 function ruFitted() { const t = state.telemetry; return state.pots.filter(p => p.i < Math.max(t.nSensors, t.nServos)); }
 function ruPotsOn(id) { return ruFitted().filter(p => Rules.potPlanId(RU.rules, p.i) === id); }
@@ -142,7 +138,12 @@ function renderRules() {
 
 // ---------------------------------------------------------------- actions
 async function ruSend() {
+  const localHash = Rules.hash(ruJson());
   const rec = await cmd('rules', Rules.normalize(RU.rules), 'Watering plan');
+  if (rec && rec.status === 'acked') {                                     // remember the hash the BOARD computed (of the string it received) next to ours
+    RU.applied = { appliedHash: rec.result && typeof rec.result.rulesHash === 'string' ? rec.result.rulesHash : localHash, localHash };
+    ruSave(); render();
+  }
   if (rec && rec.status === 'failed' && rec.result && rec.result.detail) toast(`The controller refused the plan: ${rec.result.detail}`, 5000);
 }
 async function ruPreview() {

@@ -189,6 +189,17 @@ function simulate(rules, world, fromMs, hours) {
   }
   return { rounds, notes, nextT: trig.length ? trig[0].t : null };
 }
+// planStatus(ctlHash, applied, currentHash) — the "controller uses this plan" chip. ctlHash = telemetry.rulesHash (the board
+// hashes the exact string it RECEIVED; on the cloud path Postgres jsonb reorders the keys, so it need not equal the app's
+// canonical hash). applied = { appliedHash, localHash } kept from the last acked `rules` command (null = never applied
+// from this phone); currentHash = hash(compile(draft)) now.
+function planStatus(ctlHash, applied, currentHash) {
+  if (ctlHash === undefined) return { cls: 'uncal', label: 'controller cannot take a plan yet' };     // firmware before the watering plan
+  if (applied && currentHash !== applied.localHash) return { cls: 'warn', label: 'changes not applied yet' };
+  if (ctlHash && applied && ctlHash === applied.appliedHash) return { cls: 'info', label: 'controller uses this plan' };
+  if (!ctlHash) return { cls: 'off', label: 'controller has no plan' };
+  return { cls: 'warn', label: 'controller runs a different plan — Apply to overwrite' };
+}
 // worldFrom(state) — the simulation world from the app's State (backend.js shape); names from household.potNames.
 function worldFrom(state, nowMs) {
   const t = state.telemetry, c = state.config, names = (state.household && state.household.potNames) || {};
@@ -198,6 +209,6 @@ function worldFrom(state, nowMs) {
 }
 
 const Rules = { LIM, IDS, DOSE_WORD, POT_BUDGET_DOSES, empty, defaultPlan, validate, normalize, compile, hash, migrate, fromJSON,
-  planById, potPlanId, planOf, potsOf, nextId, triggersBetween, nextTrigger, decide, preview, simulate, worldFrom };
+  planById, potPlanId, planOf, potsOf, nextId, triggersBetween, nextTrigger, decide, preview, simulate, worldFrom, planStatus };
 if (typeof module !== 'undefined' && module.exports) module.exports = Rules; else root.Rules = Rules;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -274,6 +274,7 @@ function createLanBackend(config) {
       if (cmd === 'hwcheck') return finish('acked', { ok: true, text: 'Hardware check ran on the controller — its report is on the serial console (LAN mode cannot read it back). Live values: see the Pots and Settings screens.' });
       // everything else: acked once the queue has drained (or after a moment, for the stop that ran immediately)
       await waitFor(() => !state.telemetry.queued && !state.telemetry.busy, 60e3);
+      if (cmd === 'rules') return finish('acked', { ok: true, rulesHash: state.telemetry.rulesHash });   // the board's own hash, as the other backends return it
       return finish('acked', { ok: true });
     })();
   }

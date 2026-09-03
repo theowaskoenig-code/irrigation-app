@@ -159,7 +159,7 @@ function createSupabaseBackend(config) {
 
     async sendCommand(cmd, args) {
       const c = client();
-      const { data, error } = await c.from('commands').insert({ device_id: id, cmd, args: args || {} }).select().single();
+      const { data, error } = await c.from('commands').insert({ device_id: id, cmd, args: args || {} }).select().single();   // args is jsonb: Postgres reorders its keys, so the board's rulesHash (in the ack result) is the one to compare against
       if (error) throw new Error(error.message);
       refresh(['commands']).catch(() => {});
       return new Promise((resolve) => {

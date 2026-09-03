@@ -200,6 +200,13 @@ function createMockBackend(config) {
   }
 
   // ---- command execution (handle()) ----
+  // Postgres jsonb object key order (shorter keys first, then bytewise) — the cloud path hands the board the args in this order.
+  function jsonbOrder(v) {
+    if (Array.isArray(v)) return v.map(jsonbOrder);
+    if (!v || typeof v !== 'object') return v;
+    const o = {}; Object.keys(v).sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0)).forEach(k => { o[k] = jsonbOrder(v[k]); });
+    return o;
+  }
   async function execute(cmd, args) {
     const p = args && Number.isInteger(args.ch) ? pots[args.ch] : null;
     switch (cmd) {
@@ -246,12 +253,12 @@ function createMockBackend(config) {
       case 'interval': state.device.intervalS = clamp(args.s | 0, 60, 3600); return { ok: true, interval_s: state.device.intervalS };
       case 'rules': {                                                         // app/RULES.md §2 — validate (a v1 document is migrated), keep the last good plan on error
         if (args.clear) { ctl.rules = null; ctl.rulesHash = ''; pushEvent({ kind: 'rules', hash: '' }); return { ok: true, rulesHash: '' }; }
-        const r = Rules.fromJSON(args);
+        const recv = JSON.stringify(jsonbOrder(args));                       // what the board gets on the cloud path (jsonb key order) — it hashes THIS string
+        const r = Rules.fromJSON(recv);
         if (!r.ok) return { ok: false, reason: 'bad_rules', detail: r.error };
-        const json = Rules.compile(r.rules);
-        if (json.length > Rules.LIM.bytes) return { ok: false, reason: 'bad_rules', detail: `too long (${json.length} B)` };
+        if (recv.length > Rules.LIM.bytes) return { ok: false, reason: 'bad_rules', detail: `too long (${recv.length} B)` };
         pots.forEach(q => { const pl = Rules.planOf(r.rules, q.i); if (pl) { q.thrPct = pl.thr; q.doseML = pl.dose; } });   // the pot table mirrors its plan (tiles, "Water now (… mL)")
-        ctl.rules = r.rules; ctl.rulesHash = Rules.hash(json); ctl.autoLast = Date.now();
+        ctl.rules = r.rules; ctl.rulesHash = Rules.hash(recv); ctl.autoLast = Date.now();
         pushEvent({ kind: 'rules', hash: ctl.rulesHash });
         return { ok: true, rulesHash: ctl.rulesHash, v: 2, planNext: planNext(), n: { plans: r.rules.plans.length, pots: Object.keys(r.rules.pots).length, modifiers: 0 } };
       }

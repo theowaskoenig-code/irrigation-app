@@ -181,6 +181,17 @@ const always = { id: 'b', name: 'Every time', when: { times: ['19:00'] }, mode: 
   eq('worldFrom', [w.nFitted, w.tempC, w.tankLeft, w.mlPerSec, w.lastRoundMs, w.nowMs, w.pots[0].name, w.pots[0].todayML], [15, 12.5, 9000, 25, 123, T0, '1 Basil', 250]);
   eq('worldFrom no temperature', R.worldFrom(Object.assign({}, st, { telemetry: Object.assign({}, st.telemetry, { tempOK: false }) })).tempC, null);
 }
+{ // planStatus — the "controller uses this plan" chip compares the BOARD's hash (of the string it received) with the one it acked
+  const L = R.hash(R.compile(DOC)), B = 'b0a7d1e2';                        // L = our canonical hash, B = what the board computed (jsonb key order)
+  const applied = { appliedHash: B, localHash: L };
+  eq('chip: firmware without plans', R.planStatus(undefined, applied, L).cls, 'uncal');
+  eq('chip: uses this plan (board hash ≠ canonical, = acked)', R.planStatus(B, applied, L).label, 'controller uses this plan');
+  eq('chip: edited since apply', R.planStatus(B, applied, 'ffffffff').label, 'changes not applied yet');
+  eq('chip: no plan on the controller', R.planStatus('', null, L).label, 'controller has no plan');
+  eq('chip: never applied from this phone, board has a plan', R.planStatus(B, null, L).label, 'controller runs a different plan — Apply to overwrite');
+  eq('chip: applied from another phone', R.planStatus('12345678', applied, L).label, 'controller runs a different plan — Apply to overwrite');
+  eq('chip: edited and the controller has no plan', R.planStatus('', applied, 'ffffffff').cls, 'warn');
+}
 
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
