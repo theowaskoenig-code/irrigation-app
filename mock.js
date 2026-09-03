@@ -330,6 +330,20 @@ function createMockBackend(config) {
       dryOut(i) { pots[i]._true = 10; readAll(); emit(); },
       setForecast(pct) { ctl.rainPct = clamp(pct | 0, 0, 100); ctl.wxAt = Date.now(); emit(); },
       dryRates() { return pots.map(p => p._rate * 3600); },     // % per hour, for the Preview's drying model
+      // 17 fake days for the Glance chart (weather.js chart shape): a rainy spell, one snow day in the cold months, a hot spell, showers the day after tomorrow.
+      weatherChart() {
+        const now = Date.now(), d0 = new Date(now); d0.setHours(0, 0, 0, 0);
+        const winter = d0.getMonth() >= 10 || d0.getMonth() <= 2, base = winter ? 2 : 14;
+        const plan = (k) => k >= -9 && k <= -7 ? { code: k === -8 ? 63 : 61, t: base + 3, rain: [5, 20] } : (winter && k === -4) ? { code: 71, t: -2, snow: [8, 16] }
+          : k >= -3 && k <= 0 ? { code: 0, t: base + 16 } : k === 1 ? { code: 2, t: base + 10 } : k === 2 ? { code: 80, t: base + 8, rain: [13, 17] } : { code: [1, 3, 2, 45, 1][Math.abs(k) % 5], t: base + 8 };
+        const days = [], hours = [];
+        for (let k = -14; k <= 2; k++) {
+          const w = plan(k), day = d0.getTime() + k * 86400e3;
+          days.push({ day, code: w.code, tMax: w.t + 1, tMin: w.t - 7 });
+          const band = w.rain || w.snow; if (band) for (let h = band[0]; h < band[1]; h++) hours.push({ ts: day + h * 3600e3, mm: w.snow ? 0.8 : 0.6 + (h % 3) * 0.5, pct: 85, code: w.snow ? 71 : 61 });
+        }
+        return { days, hours };
+      },
       reasonText,
     },
   };

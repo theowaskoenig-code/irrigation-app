@@ -272,3 +272,21 @@ td input { width: 72px; padding: 6px 6px; border: 2px solid var(--border); borde
 .login form { width: 100%; max-width: 380px; display: grid; gap: 12px; }
 .login .check { display: flex; align-items: center; gap: 10px; }
 .login .check input { width: 22px; height: 22px; }
+
+/* ---- weather in the Glance chart (2026-09-03): icon strip, rain/snow bands, temperature on the right axis ---- */
+.chart .wxi { fill: none; stroke: var(--text); stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; opacity: .8; }
+.chart .wxi.today { stroke-width: 2.2; opacity: 1; }
+.chart .wxi.amb { stroke: var(--amber); opacity: 1; }
+.chart .future { fill: var(--text); opacity: .05; }
+.chart .nowline { stroke: var(--text); stroke-width: 1.5; stroke-dasharray: 3 3; opacity: .6; }
+.chart .rainband, .wxlegend .rainband { fill: var(--wet); opacity: .22; }
+.chart .snowband, .wxlegend .snowband { fill: url(#wxsnow); }
+.chart .snowline { stroke: var(--text-3); stroke-width: 1.2; }
+.chart .tband { fill: var(--amber); opacity: .15; }
+.chart .tfc { fill: none; stroke: var(--amber); stroke-width: 1.8; stroke-dasharray: 5 4; stroke-linejoin: round; }
+.chart .tmeas, .wxlegend .tmeas { fill: none; stroke: var(--amber); stroke-width: 1.5; stroke-linejoin: round; }
+.chart .tmeas { opacity: .8; }
+.chart .lbl.amb { fill: var(--amber); }
+.wxlegend { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 13px; font-weight: 700; color: var(--text-2); }
+.wxlegend svg { width: 16px; height: 16px; margin-right: 2px; vertical-align: -3px; }
+.wxlegend span { color: var(--text-3); }

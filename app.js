@@ -99,17 +99,62 @@ function histInvalidate() { HIST.at = 0; Object.keys(HIST.pot).forEach(k => { if
 
 // ---------------------------------------------------------------- charts (inline SVG, 520 wide)
 const CW = 520, CPL = 36, CPR = 14, DAY_MS = 86400e3;
-function xAxisLabels(from, days, y) {
-  const marks = days > 14 ? [-21, -14, -7, 0] : [-7, 0], today = from + (days - 1) * DAY_MS, x = (ts) => CPL + (ts - from) / (days * DAY_MS) * (CW - CPL - CPR);
-  return marks.filter(d => today + d * DAY_MS >= from).map(d => `<text class="lbl" x="${x(today + d * DAY_MS + DAY_MS / 2).toFixed(1)}" y="${y}" text-anchor="middle">${d ? `−${-d} d` : 'today'}</text>`).join('');
+function xAxisLabels(x, from, days, ahead, y) {
+  const marks = (days > 14 ? [-21, -14, -7, 0] : [-7, 0]).concat(ahead ? [ahead] : []), today = from + (days - 1) * DAY_MS;
+  return marks.filter(d => today + d * DAY_MS >= from).map(d => `<text class="lbl" x="${x(today + d * DAY_MS + DAY_MS / 2).toFixed(1)}" y="${y}" text-anchor="middle">${d > 0 ? `+${d} d` : d ? `−${-d} d` : 'today'}</text>`).join('');
 }
-// Tank level (hourly) over litres dosed per day — one time axis, from history().
+// Weather icons for the chart strip: monochrome line drawings in a 16 px box, one per Open-Meteo weather_code group.
+const WX_ICON = {
+  sun: '<circle cx="8" cy="8" r="3"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/>',
+  suncloud: '<circle cx="5.5" cy="5.5" r="2.5"/><path d="M5.5 1v1.4M1 5.5h1.4M2.3 2.3l1 1M8.7 2.3l-1 1"/><path d="M6.5 14h6.5a2.5 2.5 0 0 0 0-5 3.5 3.5 0 0 0-6.7-.5A2.8 2.8 0 0 0 6.5 14z"/>',
+  cloud: '<path d="M5 13h7.5a3 3 0 0 0 0-6 4 4 0 0 0-7.7 0A3 3 0 0 0 5 13z"/>',
+  rain: '<path d="M5 10.5h7.5a3 3 0 0 0 0-6 4 4 0 0 0-7.7 0A3 3 0 0 0 5 10.5z"/><path d="M6 12.5l-.8 2M9 12.5l-.8 2M12 12.5l-.8 2"/>',
+  snow: '<path d="M5 10.5h7.5a3 3 0 0 0 0-6 4 4 0 0 0-7.7 0A3 3 0 0 0 5 10.5z"/><path d="M5.5 12.5l2 2M7.5 12.5l-2 2M10 12.5l2 2M12 12.5l-2 2"/>',
+  storm: '<path d="M5 10h7.5a3 3 0 0 0 0-6 4 4 0 0 0-7.7 0A3 3 0 0 0 5 10z"/><path d="M9.5 9.5l-2.5 3h3l-2 3"/>',
+};
+function wxKind(code) {
+  if (code === null || code === undefined) return null;
+  if (code === 0) return 'sun'; if (code <= 2) return 'suncloud'; if (code <= 48) return 'cloud';
+  if (code >= 95) return 'storm'; if (code >= 85 || (code >= 71 && code <= 77)) return 'snow'; return 'rain';
+}
+function wxIcon(kind, x, y, size, cls) { return `<g class="wxi ${cls}" transform="translate(${x.toFixed(1)},${y.toFixed(1)}) scale(${(size / 16).toFixed(3)})">${WX_ICON[kind]}</g>`; }
+// The chart's weather: the demo's fake 17 days in mock mode, else the same Open-Meteo answer the Weather tile uses (null until it arrives / when it failed).
+function chartWeather() {
+  if (backend.isMock) return backend.mock.weatherChart();
+  const hh = state.household; Weather.ensure(hh, render); const fc = Weather.get(hh); return fc && fc.chart ? fc.chart : null;
+}
+// Tank level (hourly) over litres dosed per day — one time axis from 14 days back to 2 days ahead, with the weather behind it:
+// icons per day along the top, blue bands in rain hours, hatched grey in snow hours, the temperature (measured solid · forecast dashed) on a right-hand axis.
 function tankChart(h) {
-  const now = Date.now(), SPAN = h.days, top = 8, H1 = 80, gap = 24, H2 = 50, axis = 18;
-  const full = state.config.tankFull, t = state.telemetry, t0 = h.from, t1 = h.from + SPAN * DAY_MS;
-  const x = (ts) => CPL + (ts - t0) / (t1 - t0) * (CW - CPL - CPR), y1 = (ml) => top + H1 - ml / full * H1;
-  let s = '';
-  [0, full / 2, full].forEach(v => { s += `<line class="grid" x1="${CPL}" x2="${CW - CPR}" y1="${y1(v).toFixed(1)}" y2="${y1(v).toFixed(1)}"/><text class="lbl" x="${CPL - 4}" y="${(y1(v) + 4).toFixed(1)}" text-anchor="end">${v / 1000}</text>`; });
+  const now = Date.now(), SPAN = h.days, AHEAD = 2, wx = chartWeather(), CPR2 = 34;
+  const dx = (CW - CPL - CPR2) / (SPAN + AHEAD), icons = wx && dx >= 24, strip = icons ? 24 : 0, top = strip + 8, H1 = 80, gap = 24, H2 = 50, axis = 18, b0 = top + H1 + gap, bottom = b0 + H2;
+  const full = state.config.tankFull, t = state.telemetry, t0 = h.from, t1 = h.from + (SPAN + AHEAD) * DAY_MS;
+  const x = (ts) => CPL + (ts - t0) / (t1 - t0) * (CW - CPL - CPR2), y1 = (ml) => top + H1 - ml / full * H1, clampX = (ts) => x(Math.min(t1, Math.max(t0, ts)));
+  let s = `<defs><pattern id="wxsnow" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" class="snowline"/></pattern></defs>`;
+  // -- weather layers (behind everything)
+  s += `<rect class="future" x="${x(now).toFixed(1)}" y="${strip}" width="${(x(t1) - x(now)).toFixed(1)}" height="${bottom - strip}"/>`;
+  if (wx) {
+    const hrs = wx.hours.filter(p => p.ts + 3600e3 > t0 && p.ts < t1).sort((a, b) => a.ts - b.ts), runs = [];
+    hrs.forEach(p => { const snow = wxKind(p.code) === 'snow', last = runs[runs.length - 1]; if (last && last.snow === snow && p.ts - last.end <= 3600e3) last.end = p.ts + 3600e3; else runs.push({ snow, start: p.ts, end: p.ts + 3600e3 }); });
+    runs.forEach(r => { s += `<rect class="${r.snow ? 'snowband' : 'rainband'}" x="${clampX(r.start).toFixed(1)}" y="${strip}" width="${Math.max(1.5, clampX(r.end) - clampX(r.start)).toFixed(1)}" height="${bottom - strip}"/>`; });
+  }
+  // -- temperature on the right axis: forecast min–max band + dashed max ahead, measured hourly line (solid) behind
+  const meas = h.temp.filter(p => p.ts >= t0 && p.ts <= now), wxd = wx ? wx.days.filter(d => d.day + DAY_MS > t0 && d.day < t1 && d.tMax !== null && d.tMin !== null) : [];
+  const tv = meas.map(p => p.c).concat(wxd.map(d => d.tMax), wxd.map(d => d.tMin));
+  if (tv.length) {
+    let lo = Math.floor(Math.min(...tv) / 10) * 10, hi = Math.ceil(Math.max(...tv) / 10) * 10; if (hi - lo < 20) hi = lo + 20;
+    const yt = (c) => top + H1 - (c - lo) / (hi - lo) * H1, mid = (d) => clampX(d.day + DAY_MS / 2);
+    if (wxd.length) {
+      s += `<polygon class="tband" points="${wxd.map(d => `${mid(d).toFixed(1)},${yt(d.tMax).toFixed(1)}`).join(' ')} ${wxd.slice().reverse().map(d => `${mid(d).toFixed(1)},${yt(d.tMin).toFixed(1)}`).join(' ')}"/>`;
+      const ahead = wxd.filter(d => d.day + DAY_MS > now); if (ahead.length > 1) s += `<path class="tfc" d="${ahead.map((d, i) => `${i ? 'L' : 'M'}${mid(d).toFixed(1)} ${yt(d.tMax).toFixed(1)}`).join(' ')}"/>`;
+    }
+    if (meas.length > 1) s += `<path class="tmeas" d="${meas.map((p, i) => `${i ? 'L' : 'M'}${x(p.ts).toFixed(1)} ${yt(p.c).toFixed(1)}`).join(' ')}"/>`;
+    const labels = (hi - lo) % 20 === 0 && hi - lo <= 40 ? [lo, (lo + hi) / 2, hi] : [lo, hi];
+    labels.forEach(v => { s += `<text class="lbl amb" x="${CW - CPR2 + 5}" y="${(yt(v) + 4).toFixed(1)}">${v}°</text>`; });
+    if (strip) s += `<g class="wxi amb" transform="translate(${CW - CPR2 + 8},3)"><path d="M6 2.5a2 2 0 0 1 4 0v6.2a3.5 3.5 0 1 1-4 0z"/><path d="M8 6v5"/><circle cx="8" cy="12" r="1.2"/></g>`;
+  }
+  // -- tank level and doses (unchanged)
+  [0, full / 2, full].forEach(v => { s += `<line class="grid" x1="${CPL}" x2="${CW - CPR2}" y1="${y1(v).toFixed(1)}" y2="${y1(v).toFixed(1)}"/><text class="lbl" x="${CPL - 4}" y="${(y1(v) + 4).toFixed(1)}" text-anchor="end">${v / 1000}</text>`; });
   const pts = h.tank.filter(p => p.ts >= t0 && p.ts <= now);
   let d = '', last = t.tankLeft;
   if (pts.length) { d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.ts).toFixed(1)} ${y1(p.ml).toFixed(1)}`).join(' '); last = pts[pts.length - 1].ml; d += ` L${x(now).toFixed(1)} ${y1(last).toFixed(1)}`; }
@@ -117,14 +162,18 @@ function tankChart(h) {
   if (last !== t.tankLeft) d += ` L${x(now).toFixed(1)} ${y1(t.tankLeft).toFixed(1)}`;   // level changed since the last hourly point (a round or a refill just now)
   s += `<path class="tank" d="${d}"/>`;
   h.refills.forEach(ts => { const X = x(ts); s += `<polygon class="refill" points="${(X - 6).toFixed(1)},${top + H1} ${(X + 6).toFixed(1)},${top + H1} ${X.toFixed(1)},${top + H1 - 10}"/><text class="lbl wet" x="${(X < CPL + 60 ? X + 8 : X - 8).toFixed(1)}" y="${top + H1 - 2}" text-anchor="${X < CPL + 60 ? 'start' : 'end'}">refill</text>`; });
+  s += `<line class="nowline" x1="${x(now).toFixed(1)}" x2="${x(now).toFixed(1)}" y1="${strip}" y2="${bottom}"/>`;
   s += `<circle class="now" cx="${x(now).toFixed(1)}" cy="${y1(t.tankLeft).toFixed(1)}" r="5"/><text class="lbl acc" x="${(x(now) - 8).toFixed(1)}" y="${(y1(t.tankLeft) + (y1(t.tankLeft) + 22 > top + H1 ? -9 : 17)).toFixed(1)}" text-anchor="end">${litres(t.tankLeft)} L</text>`;
-  const maxL = Math.max(0.5, ...h.perDay.map(dd => dd.ml / 1000)) * 1.15, b0 = top + H1 + gap, y2 = (l) => b0 + H2 - l / maxL * H2;
-  const dx = (CW - CPL - CPR) / SPAN, bw = dx * 0.62;
+  const maxL = Math.max(0.5, ...h.perDay.map(dd => dd.ml / 1000)) * 1.15, y2 = (l) => b0 + H2 - l / maxL * H2, bw = dx * 0.62;
   h.perDay.forEach(dd => { const l = dd.ml / 1000; if (l > 0) s += `<rect class="bar" x="${(x(dd.day + DAY_MS / 2) - bw / 2).toFixed(1)}" y="${y2(l).toFixed(1)}" width="${bw.toFixed(1)}" height="${(l / maxL * H2).toFixed(1)}" rx="1"/>`; });
-  s += `<line class="grid" x1="${CPL}" x2="${CW - CPR}" y1="${b0 + H2}" y2="${b0 + H2}"/><text class="lbl" x="${CPL - 4}" y="${b0 + 3}" text-anchor="end">${maxL.toFixed(1)}</text>`;
-  s += xAxisLabels(t0, SPAN, b0 + H2 + 13);
+  s += `<line class="grid" x1="${CPL}" x2="${CW - CPR2}" y1="${bottom}" y2="${bottom}"/><text class="lbl" x="${CPL - 4}" y="${b0 + 3}" text-anchor="end">${maxL.toFixed(1)}</text>`;
+  s += xAxisLabels(x, t0, SPAN, AHEAD, bottom + 13);
+  // -- the icon strip, one per day, today a little bolder
+  if (icons) wx.days.filter(dd => dd.day >= t0 && dd.day < t1).forEach(dd => { const k = wxKind(dd.code); if (k) s += wxIcon(k, x(dd.day + DAY_MS / 2) - 9, 3, 18, dd.day <= now && now < dd.day + DAY_MS ? 'today' : ''); });
+  const legend = [wx ? '<svg viewBox="0 0 16 16"><rect class="rainband" x="1" y="3" width="14" height="10"/></svg>rain' : '', wx ? '<svg viewBox="0 0 16 16"><rect class="snowband" x="1" y="3" width="14" height="10"/></svg>snow' : '', tv.length ? '<svg viewBox="0 0 16 16"><path class="tmeas" d="M1 11 L6 5 L10 9 L15 4"/></svg>temperature' : ''].filter(Boolean);
   return `<div class="chead"><span class="l">Tank · L</span><span class="l">Dosed / day · ${SPAN} d</span></div>
-  <svg viewBox="0 0 ${CW} ${b0 + H2 + axis}" role="img" aria-label="Tank level and litres dosed per day over ${SPAN} days">${s}</svg>`;
+  <svg viewBox="0 0 ${CW} ${bottom + axis}" role="img" aria-label="Tank level, litres dosed per day and the weather over ${SPAN} days and ${AHEAD} days ahead">${s}</svg>
+  ${legend.length ? `<div class="wxlegend">${legend.join('<span>·</span>')}</div>` : ''}`;
 }
 // Temperature, hourly, over the same span.
 function tempChart(h) {
@@ -136,7 +185,7 @@ function tempChart(h) {
   [lo, hi].forEach(v => { s += `<line class="grid" x1="${CPL}" x2="${CW - CPR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="lbl" x="${CPL - 4}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${v}</text>`; });
   const f = state.config.minTempC; if (f > lo) s += `<line class="floor" x1="${CPL}" x2="${CW - CPR}" y1="${y(f).toFixed(1)}" y2="${y(f).toFixed(1)}"/><text class="lbl" x="${CW - CPR}" y="${(y(f) - 3).toFixed(1)}" text-anchor="end">frost ${f} °C</text>`;
   s += `<path class="temp" d="${pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.ts).toFixed(1)} ${y(p.c).toFixed(1)}`).join(' ')}"/>`;
-  s += xAxisLabels(t0, h.days, top + H + 13);
+  s += xAxisLabels(x, t0, h.days, 0, top + H + 13);
   return `<div class="chead"><span class="l">Temperature · °C</span><span class="l">${Math.min(...pts.map(p => p.c)).toFixed(1)} – ${Math.max(...pts.map(p => p.c)).toFixed(1)} °C</span></div>
   <svg viewBox="0 0 ${CW} ${top + H + axis}" role="img" aria-label="Temperature over ${h.days} days">${s}</svg>`;
 }
@@ -150,7 +199,7 @@ function moistureChart(ph, thrPct) {
   s += `<line class="floor" x1="${CPL}" x2="${CW - CPR}" y1="${y(thrPct).toFixed(1)}" y2="${y(thrPct).toFixed(1)}"/><text class="lbl" x="${CW - CPR}" y="${(y(thrPct) - 3).toFixed(1)}" text-anchor="end">water below ${thrPct} %</text>`;
   if (pts.length > 1) s += `<path class="moist" d="${pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.ts).toFixed(1)} ${y(p.pct).toFixed(1)}`).join(' ')}"/>`;
   ph.doses.filter(d => d.ts >= t0).forEach(d => { const X = x(d.ts); s += `<polygon class="dose" points="${(X - 5).toFixed(1)},${top + H + 2} ${(X + 5).toFixed(1)},${top + H + 2} ${X.toFixed(1)},${top + H - 8}"><title>${d.ml} mL · ${esc(when(d.ts))}</title></polygon>`; });
-  s += xAxisLabels(t0, days, top + H + 14);
+  s += xAxisLabels(x, t0, days, 0, top + H + 14);
   return `<div class="chead"><span class="l">Moisture · % · ${days} d</span><span class="l">▲ = a dose (${ph.doses.length})</span></div>
   <svg viewBox="0 0 ${CW} ${top + H + axis}" role="img" aria-label="Moisture over ${days} days with doses">${s}</svg>`;
 }
@@ -169,7 +218,7 @@ function weatherTile() {
   else { fc = Weather.get(hh); Weather.ensure(hh, render); }
   const err = backend.isMock ? null : Weather.error(hh);
   const ctl = t.rainPct !== undefined && t.rainPct !== null && t.wxAgeS !== undefined ? `<br>controller has ${t.rainPct} % · ${ago(Date.now() - t.wxAgeS * 1000)}` : '';
-  if (!fc) return `<div class="w"><div class="l">Weather · ${esc(loc.label || 'set in Settings')}</div><div class="v">—</div><div class="s">${err ? `<b class="danger-text">no forecast</b> — ${esc(err)}` : 'loading the forecast…'}</div></div>`;
+  if (!fc) return `<div class="w"><div class="l">Weather · ${esc(loc.label || 'set in Settings')}</div><div class="v">—</div><div class="s">${err ? 'weather unavailable' : 'loading the forecast…'}</div></div>`;
   return `<div class="w"><div class="l">Weather · ${esc(loc.label || `${loc.lat}, ${loc.lon}`)}</div>
     <div class="v">${fc.today.tMax === null ? '—' : fc.today.tMax + '<small>°C today</small>'}</div>
     <div class="s">rain <b>${fc.h12.pct} %</b> (${fc.h12.mm} mm) next 12 h<br>${fc.h24.pct} % (${fc.h24.mm} mm) next 24 h<br>tomorrow ${fc.tomorrow.tMax === null ? '—' : fc.tomorrow.tMax + ' °C'} · ${fc.tomorrow.pct === null ? '—' : fc.tomorrow.pct + ' %'}${fc.fake ? ' · demo' : ''}${ctl}</div></div>`;
