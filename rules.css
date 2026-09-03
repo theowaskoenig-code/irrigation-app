@@ -10,6 +10,15 @@
 .ru-line select, .ru-line input[type="time"] { min-height: 44px; padding: 6px 8px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); }
 .ru-range { width: 100%; height: 44px; accent-color: var(--accent); margin: 0; }
 .ru-preview { border-left: 6px solid var(--accent); padding: 4px 10px; font-size: 16px; line-height: 1.35; }
+.ru-would { border: 2px solid var(--border); border-radius: var(--radius); padding: 8px 10px; font-size: 16px; line-height: 1.35; }
+.ru-chip small { font-size: 12px; font-weight: 400; margin-left: 4px; opacity: .85; }
+.ru-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.ru-mode { min-height: 72px; padding: 10px 12px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: left; display: flex; flex-direction: column; gap: 4px; }
+.ru-mode b { font-size: 17px; }
+.ru-mode span { font-size: 14px; color: var(--text-2); line-height: 1.3; }
+.ru-mode.active { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+.ru-mode.active b::before { content: '● '; color: var(--accent); }
+.pot .pl, .pl { display: inline-block; font-size: 12px; font-weight: 700; line-height: 1; padding: 3px 5px; border: 2px solid var(--border); border-radius: var(--radius); color: var(--text-2); margin-left: 6px; vertical-align: middle; }
 
 /* ---- Test bench ---- */
 .tb-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }

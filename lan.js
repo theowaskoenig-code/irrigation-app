@@ -48,7 +48,10 @@
 //   refresh                    → r                    temp → t        sweep → s
 //   hwcheck                    → i                    (output goes to the serial console, not back to the app)
 //   reboot                     → reboot
-//   rules {…} / {clear:true}   → rules <json> / rules clear   (app/RULES.md)
+//   rules {…} / {clear:true}   → rules <json> / rules clear   (app/RULES.md, rules v2)
+//   plan_preview {id}          → rules dry <id>      (the board prints its list on the serial console; /api/cmd cannot
+//                                 return it, so the app shows its own Rules.preview of the last /api/state — same logic)
+//   plan_run {id}              → rules run <id>      (a real round with that plan; acked on its round event)
 //   weather {rainPct,h,tMaxC}  → weather <pct> <h> <tMax>
 //   interval                   → not available in LAN mode (the app polls every 2 s) → ok:false, reason 'not_in_lan_mode'
 //
@@ -102,8 +105,10 @@ function createLanBackend(config) {
     state.telemetry = {
       ts: now, tempC: s.temp_c, tempOK: s.temp_c !== null, tankLeft: s.tank.ml, totalML: s.tank.total_ml,
       pumpRunning: !!s.pump.on, pumpEn: !!s.pump.enabled, tempEn: !!s.temp_en, ledEn: !!s.led_en,
-      autoMin: s.auto.minutes, nextRoundAt: s.auto.minutes > 0 ? msToTs(s.auto.next_ms) : null,
+      autoMin: s.auto.minutes, nextRoundAt: s.planNext > 0 ? s.planNext * 1000 : s.auto.minutes > 0 ? msToTs(s.auto.next_ms) : null,   // planNext (epoch s, 0.4.0) wins over the auto timer
       nSensors: s.fit.sensors, nServos: s.fit.servos, mlPerSec: s.flow_ml_s, busy: !!s.busy, queued: s.queued | 0,
+      rulesHash: typeof s.rulesHash === 'string' ? s.rulesHash : undefined,   // undefined = firmware before the watering plan
+      planNext: s.planNext > 0 ? s.planNext : 0,
     };
     state.config = { openUs: s.servo.open_us, closedUs: s.servo.closed_us, tankFull: s.tank.full_ml, tankReserve: s.tank.reserve_ml,
       minTempC: s.limits.min_temp_c, plausMargin: s.limits.plaus_margin, maxPumpMs: s.limits.max_pump_ms };
@@ -225,6 +230,8 @@ function createLanBackend(config) {
       case 'hwcheck': return 'i';
       case 'reboot': return 'reboot';
       case 'rules': return a.clear ? 'rules clear' : `rules ${JSON.stringify(a)}`;          // app/RULES.md §2
+      case 'plan_preview': return `rules dry ${a.id}`;
+      case 'plan_run': return `rules run ${a.id}`;
       case 'weather': return `weather ${a.rainPct | 0} ${a.h | 0} ${a.tMaxC | 0}`;
       default: return null;                    // interval, unknown
     }
@@ -259,10 +266,11 @@ function createLanBackend(config) {
         if (!ev) return finish('acked', { ok: true, note: 'no dose event seen — check the serial console' });
         return ev.kind === 'dose' ? finish('acked', { ok: true, ml: ev.ml, sec: ev.sec }) : finish('failed', { ok: false, reason: ev.reason });
       }
-      if (cmd === 'run') {
+      if (cmd === 'run' || cmd === 'plan_run') {
         const ev = await waitFor(() => state.events.find(e => e.kind === 'round' && e.ts >= sentAt - 1500), 20 * 60e3);
         return finish('acked', ev ? { ok: true, watered: ev.watered, skipped: ev.skipped, refused: ev.refused, tankLeft: ev.tankLeft } : { ok: true });
       }
+      if (cmd === 'plan_preview') return finish('acked', { ok: true, console: true });   // the list prints on the serial console; the app shows its own (rules-ui.js, same logic)
       if (cmd === 'hwcheck') return finish('acked', { ok: true, text: 'Hardware check ran on the controller — its report is on the serial console (LAN mode cannot read it back). Live values: see the Pots and Settings screens.' });
       // everything else: acked once the queue has drained (or after a moment, for the stop that ran immediately)
       await waitFor(() => !state.telemetry.queued && !state.telemetry.busy, 60e3);
@@ -279,7 +287,7 @@ function createLanBackend(config) {
     async ackAlert(id) { const now = Date.now(); state.alerts.forEach(a => { if (id === 'all' || a.id === id) { a.ackedAt = a.ackedAt || now; acked[a.key] = a.ackedAt; } }); lsSet('lanAckedAlerts', acked); emit(); },
     async setHousehold(patch) { Object.assign(state.household, patch); lsSet('potNames', state.household.potNames); lsSet('weatherLoc', state.household.weatherLoc); emit(); },
     // history since power-up only (the board keeps 48 events and this tab keeps one reading a minute); moisture history needs the cloud
-    async history(days) { const h = historyFromLocal(state.readings, state.events, days, Date.now()); h.partial = true; h.note = 'LAN mode: history since the controller was powered up, from this browser tab'; return h; },
+    async history(days, endOffsetDays) { const h = historyFromLocal(state.readings, state.events, days, Date.now(), endOffsetDays || 0); h.partial = true; h.note = 'LAN mode: history since the controller was powered up, from this browser tab'; return h; },
     async potHistory(ch, days) { const from = Date.now() - days * 86400e3; return { days, moisture: [], doses: state.events.filter(e => e.kind === 'dose' && e.ch === ch && e.ts >= from).map(e => ({ ts: e.ts, ml: e.ml })).sort((a, b) => a.ts - b.ts), note: 'Moisture history needs the cloud (samples table); LAN mode has only the live value.' }; },
     async login() { return { email: 'local network' }; },
     async logout() {},

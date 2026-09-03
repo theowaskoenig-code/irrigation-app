@@ -77,7 +77,8 @@ function createSupabaseBackend(config) {
     // The protocol's telemetry has no next-round field; the firmware may add `nextRoundS` (seconds until the
     // next auto round). Without it: last auto round + interval.
     let nextRoundAt = null;
-    if (autoMin > 0) {
+    if (num(sp.planNext, 0) > 0) nextRoundAt = sp.planNext * 1000;                       // the watering plan's next round (epoch s, firmware 0.4.0)
+    else if (autoMin > 0) {
       if (Number.isFinite(sp.nextRoundS)) nextRoundAt = (stTs || Date.now()) + sp.nextRoundS * 1000;
       else { const last = events.find(e => e.kind === 'round' && e.trigger === 'auto'); nextRoundAt = (last ? last.ts : (stTs || Date.now())) + autoMin * 60e3; }
     }
@@ -92,11 +93,14 @@ function createSupabaseBackend(config) {
     const lr = events.find(e => e.kind === 'round') || null;
     const hh = raw.household || {};
     state = {
-      device: { id, name: d.name || 'Balcony', fw: d.fw || sp.fw || '—', ip: d.ip || sp.ip || '', rssi: num(d.rssi, num(sp.rssi, 0)), up: num(sp.up, 0),
+      // fw / ip / rssi / up: the latest device_state payload first (it arrives with every telemetry post and is in the realtime
+      // publication), the devices row only as the fallback — otherwise a firmware update showed the old version until a full reload.
+      device: { id, name: d.name || 'Balcony', fw: sp.fw || cp.fw || d.fw || '—', ip: sp.ip || d.ip || '', rssi: num(sp.rssi, num(d.rssi, 0)), up: num(sp.up, 0),
         lastSeen: ms(d.last_seen), intervalS: num(d.interval_s, 300), havePCA: sp.havePCA !== false },
       telemetry: { ts: stTs, tempC: num(sp.tempC, 0), tempOK: sp.tempOK === true, tankLeft: num(sp.tankLeft, 0), totalML: num(sp.totalML, 0),
         pumpRunning: sp.pumpRunning === true, pumpEn: sp.pumpEn !== false, tempEn: sp.tempEn !== false, ledEn: sp.ledEn !== false, autoMin, nextRoundAt,
-        nSensors: num(sp.nSensors, num(cp.nSensors, 0)), nServos: num(sp.nServos, num(cp.nServos, 0)), mlPerSec: num(sp.mlPerSec, num(cp.mlPerSec, 30)) },
+        nSensors: num(sp.nSensors, num(cp.nSensors, 0)), nServos: num(sp.nServos, num(cp.nServos, 0)), mlPerSec: num(sp.mlPerSec, num(cp.mlPerSec, 30)),
+        rulesHash: typeof sp.rulesHash === 'string' ? sp.rulesHash : undefined, planNext: num(sp.planNext, 0) },   // rulesHash undefined = firmware before the watering plan (app/RULES.md §2)
       config: { openUs: num(cp.openUs, 2500), closedUs: num(cp.closedUs, 1300), tankFull: num(cp.tankFull, 25000), tankReserve: num(cp.tankReserve, 500),
         minTempC: num(cp.minTempC, 3), plausMargin: num(cp.plausMargin, 250), maxPumpMs: num(cp.maxPumpMs, 90000) },
       pots,
@@ -194,21 +198,22 @@ function createSupabaseBackend(config) {
 
     // History charts: GROUP BY helpers from ../supabase/history.sql (rpc). Until Theo has run that file the rpc
     // fails, and the last 3 days held in state.readings/events are bucketed here instead, flagged `partial`.
-    async history(days) {
-      const c = client(), tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'Europe/Berlin';
+    async history(days, endOffsetDays) {
+      const c = client(), tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'Europe/Berlin', off = endOffsetDays || 0;
+      const DAY = 86400e3, d0 = new Date(); d0.setHours(0, 0, 0, 0); const from = d0.getTime() - (off + days - 1) * DAY, to = from + days * DAY;
+      const pEnd = new Date(to - 1).toISOString();                                             // the window's last day, local (history.sql p_end)
       const [rd, ds, rf] = await Promise.all([
-        c.rpc('history_readings', { p_dev: id, p_days: days }),
-        c.rpc('history_doses', { p_dev: id, p_days: days, p_tz: tz }),
-        c.from('events').select('ts').eq('device_id', id).eq('kind', 'refill').gte('ts', new Date(Date.now() - days * 86400e3).toISOString()).order('ts', { ascending: true }).limit(200),
+        c.rpc('history_readings', { p_dev: id, p_days: days, p_end: pEnd }),
+        c.rpc('history_doses', { p_dev: id, p_days: days, p_tz: tz, p_end: pEnd }),
+        c.from('events').select('ts').eq('device_id', id).eq('kind', 'refill').gte('ts', new Date(from).toISOString()).lt('ts', new Date(to).toISOString()).order('ts', { ascending: true }).limit(200),
       ]);
       if (rd.error || ds.error) {
-        const h = historyFromLocal(state.readings, state.events, days, Date.now());
-        h.partial = true; h.note = `Only the last 3 days — run app/supabase/history.sql once (SETUP.md step 11). (${(rd.error || ds.error).message})`;
+        const h = historyFromLocal(state.readings, state.events, days, Date.now(), off);
+        h.partial = true; h.note = `Only the last 3 days — run app/supabase/history.sql once more (SETUP.md step 11; it gained the pan window). (${(rd.error || ds.error).message})`;
         return h;
       }
-      const DAY = 86400e3, d0 = new Date(); d0.setHours(0, 0, 0, 0); const from = d0.getTime() - (days - 1) * DAY;
-      const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: from + i * DAY, ml: 0 });
-      (ds.data || []).forEach(r => { const [y, m, d] = r.day.split('-').map(Number); const t = new Date(y, m - 1, d).getTime(); const i = Math.round((t - from) / DAY); if (i >= 0 && i < days) perDay[i].ml = num(r.ml, 0); });
+      const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: from + i * DAY, ml: 0, n: 0 });
+      (ds.data || []).forEach(r => { const [y, m, d] = r.day.split('-').map(Number); const t = new Date(y, m - 1, d).getTime(); const i = Math.round((t - from) / DAY); if (i >= 0 && i < days) { perDay[i].ml = num(r.ml, 0); perDay[i].n = num(r.n, 0); } });
       const rows = rd.data || [];
       return { days, from, tank: rows.filter(r => r.tank_ml !== null).map(r => ({ ts: ms(r.ts), ml: r.tank_ml })), temp: rows.filter(r => r.temp_c !== null).map(r => ({ ts: ms(r.ts), c: r.temp_c })),
         perDay, refills: (rf.data || []).map(r => ms(r.ts)) };

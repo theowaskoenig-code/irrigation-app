@@ -16,7 +16,9 @@
 //                                 that is ok:false with result.reason).
 //   ackAlert(idOrAll)          -> 'all' or an alert id
 //   setHousehold(patch)        -> household-only settings (pot names, ntfy topic, weather location)
-//   history(days)              -> the charts' data for the last N days (14 / 30): see History shape below
+//   history(days, endOffsetDays) -> the charts' data for a window of N days whose LAST day is today − endOffsetDays
+//                                 (0 / omitted = ending today; negative = a window reaching into the future, those
+//                                 days come back empty; the Glance chart pans with it): see History shape below
 //   potHistory(ch, days)       -> one pot's moisture history: { days, moisture:[{ts,pct}], doses:[{ts,ml}], note? }
 //   login(email, pw) / logout() / session() -> auth (mock: always logged in)
 //   isMock                     -> boolean (UI shows mock-only controls)
@@ -37,8 +39,8 @@
 //   events:    [{ id, ts, kind, ch, ... }]                                (newest first)
 //   readings:  [{ ts, tankLeft, tempC }]   (the last days of telemetry; the charts use history() instead)
 //
-// History shape (history(days)): { days, from (ms, local midnight days-1 ago), tank:[{ts,ml}] hourly, temp:[{ts,c}] hourly,
-//   perDay:[{day (ms), ml}] one per day, refills:[ts], partial (true when only the local ring/last days were available), note? }
+// History shape (history(days, endOffsetDays)): { days, from (ms, local midnight of the window's first day), tank:[{ts,ml}] hourly, temp:[{ts,c}] hourly,
+//   perDay:[{day (ms), ml, n (doses)}] one per day, refills:[ts], partial (true when only the local ring/last days were available), note? }
 
 // ↓↓↓ Theo: paste your two values here (Supabase → Project Settings → API), then change 'mock' to 'supabase'.
 const CONFIG = {
@@ -75,19 +77,20 @@ function connState(device, now) {
 
 // The charts' data from what a backend already holds in memory (readings + events): hourly buckets and per-day sums.
 // mock.js and lan.js use it directly; supabase.js uses it as the fallback while history.sql is not installed.
-function historyFromLocal(readings, events, days, now) {
+// endOffsetDays: the window's last day is today − endOffsetDays (0 = today, negative = future days, which stay empty).
+function historyFromLocal(readings, events, days, now, endOffsetDays) {
   const DAY = 86400e3, d0 = new Date(now); d0.setHours(0, 0, 0, 0);
-  const from = d0.getTime() - (days - 1) * DAY, buckets = new Map();
+  const from = d0.getTime() - ((endOffsetDays || 0) + days - 1) * DAY, to = from + days * DAY, buckets = new Map();
   readings.forEach(r => {
-    if (r.ts < from) return;
+    if (r.ts < from || r.ts >= to) return;
     const h = Math.floor(r.ts / 3600e3); let b = buckets.get(h); if (!b) buckets.set(h, b = { ts: h * 3600e3, ml: 0, n: 0, c: 0, nc: 0 });
     b.ml += r.tankLeft; b.n++; if (typeof r.tempC === 'number' && Number.isFinite(r.tempC)) { b.c += r.tempC; b.nc++; }
   });
   const bs = [...buckets.values()].sort((a, b) => a.ts - b.ts);
-  const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: from + i * DAY, ml: 0 });
-  events.forEach(e => { if (e.kind === 'dose' && e.ts >= from) perDay[Math.min(days - 1, Math.floor((e.ts - from) / DAY))].ml += e.ml || 0; });
+  const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: from + i * DAY, ml: 0, n: 0 });
+  events.forEach(e => { if (e.kind === 'dose' && e.ts >= from && e.ts < to) { const d = perDay[Math.floor((e.ts - from) / DAY)]; d.ml += e.ml || 0; d.n++; } });
   return { days, from, tank: bs.map(b => ({ ts: b.ts, ml: Math.round(b.ml / b.n) })), temp: bs.filter(b => b.nc).map(b => ({ ts: b.ts, c: +(b.c / b.nc).toFixed(1) })),
-    perDay, refills: events.filter(e => e.kind === 'refill' && e.ts >= from).map(e => e.ts).sort((a, b) => a - b) };
+    perDay, refills: events.filter(e => e.kind === 'refill' && e.ts >= from && e.ts < to).map(e => e.ts).sort((a, b) => a - b) };
 }
 
 // Litres/day from the last 7 days of dose events; null when there is no history.

@@ -35,14 +35,21 @@ function createMockBackend(config) {
     tankLeft: 15250, totalML: 9750, pumpRunning: false, pumpEn: true, tempEn: true, ledEn: true,
     autoMin: 720, tempC: 19.6, tempOK: true, havePCA: true, up: 3 * 86400 + 4212,
     autoLast: now - 200 * 60e3,                 // = the last seeded round; next one in 12 h − 200 min
-    rules: null, rulesHash: '',                 // app/RULES.md — the rule set the `rules` command installed (null = 0.2.0 behaviour)
+    rules: null, rulesHash: '',                 // app/RULES.md — the watering plan (rules v2) the `rules` command installed (null = 0.2.0 behaviour)
     rainPct: 35, rainH: 12, tMaxC: 24, wxAt: now,   // the last `weather` push (mock: a fair-weather default)
   };
-  const dailyML = () => ctl.rules ? ctl.rules.limits.dailyML : 10000;
-  const todayTotal = () => pots.reduce((s, p) => s + p.todayML, 0);
+  const todayTotal = (list) => (list || pots).reduce((s, p) => s + p.todayML, 0);
+  const nFitted = () => Math.min(ctl.nSensors, ctl.nServos);
   function nextRoundMs() {
-    if (ctl.rules && ctl.rules.schedule.length) { const t = Rules.triggersBetween(ctl.rules, Date.now(), Date.now() + 8 * 86400e3, ctl.autoLast); return t.length ? t[0].t : null; }
+    if (ctl.rules) return Rules.nextTrigger(ctl.rules, null, Date.now(), ctl.autoLast);
     return ctl.autoMin > 0 ? ctl.autoLast + ctl.autoMin * 60e3 : null;
+  }
+  const planNext = () => { const t = ctl.rules ? nextRoundMs() : null; return t ? Math.floor(t / 1000) : 0; };   // epoch seconds, 0 = none (firmware 0.4.0)
+  // The simulation world for Rules.preview (the same shape rules-ui.js builds from the app State).
+  function world() {
+    return { pots: pots.map(p => ({ i: p.i, pct: p.pct, sState: p.sState, todayML: p.todayML, senEn: p.senEn, valEn: p.valEn })), nFitted: nFitted(),
+      tempC: ctl.tempEn && ctl.tempOK ? ctl.tempC : null, tankLeft: ctl.tankLeft, tankFull: TANK_FULL, reserve: TANK_RESERVE, minTempC: MIN_TEMP,
+      mlPerSec: ctl.mlPerSec, maxPumpMs: MAX_PUMP_MS, havePCA: ctl.havePCA, lastRoundMs: ctl.autoLast, nowMs: Date.now() };
   }
 
   const state = {
@@ -110,7 +117,7 @@ function createMockBackend(config) {
   function snapshot() {
     state.telemetry = { ts: Date.now(), tempC: ctl.tempC, tempOK: ctl.tempOK, tankLeft: ctl.tankLeft, totalML: ctl.totalML,
       pumpRunning: ctl.pumpRunning, pumpEn: ctl.pumpEn, tempEn: ctl.tempEn, ledEn: ctl.ledEn, autoMin: ctl.autoMin,
-      nextRoundAt: nextRoundMs(), rulesHash: ctl.rulesHash, rainPct: ctl.rainPct, rainH: ctl.rainH, wxAgeS: Math.round((Date.now() - ctl.wxAt) / 1000),
+      nextRoundAt: nextRoundMs(), rulesHash: ctl.rulesHash, planNext: planNext(), rainPct: ctl.rainPct, rainH: ctl.rainH, wxAgeS: Math.round((Date.now() - ctl.wxAt) / 1000),
       nSensors: ctl.nSensors, nServos: ctl.nServos, mlPerSec: ctl.mlPerSec };
     state.config = { openUs: ctl.openUs, closedUs: ctl.closedUs, tankFull: TANK_FULL, tankReserve: TANK_RESERVE, minTempC: MIN_TEMP, plausMargin: PLAUS_MARGIN, maxPumpMs: MAX_PUMP_MS };
     state.pots = pots.map(p => ({ i: p.i, raw: p.raw, pct: p.pct, sState: p.sState, vState: p.vState, todayML: p.todayML,
@@ -135,7 +142,9 @@ function createMockBackend(config) {
     ctl.pumpRunning = false; pushEvent({ kind: 'pump', on: false, why: capped ? 'capped' : 'done' }); emit();
     return { ok: true };
   }
-  async function waterPot(i, quiet, dosePct) {      // dosePct: the round's modifier sum (app/RULES.md §3.4); 0 for a manual `water`
+  // plan: the watering plan the pot follows (app/RULES.md §5: mode dry = water below thr, always = skip above thr, the plan's dose
+  // and daily cap); null = the 0.2.0 behaviour (the pot's own thr/dose, dry, 10 L/day).
+  async function waterPot(i, quiet, plan) {
     const p = pots[i];
     const refuse = (reason) => { if (!quiet || reason !== 'wet') pushEvent({ kind: 'refused', ch: i, reason, raw: p.raw, pct: p.pct, tempC: ctl.tempC });
       if (['implausible', 'uncal', 'budget', 'nopca'].includes(reason)) raise(`pot_refused:${i}`, 'pot_refused', 'warn', i, `Pot ${i + 1} refused: ${reasonText(reason)}`);
@@ -148,12 +157,14 @@ function createMockBackend(config) {
     evalCh(p);
     if (p.sState === 3) return refuse('uncal');
     if (p.sState === 2) return refuse('implausible');
-    if (p.pct >= p.thrPct) return refuse('wet');
+    const thr = plan ? plan.thr : p.thrPct, dose = plan ? plan.dose : p.doseML;
+    if (plan && plan.mode === 'always' ? p.pct > thr : p.pct >= thr) return refuse('wet');
     if (ctl.tempEn && ctl.tempOK && ctl.tempC < MIN_TEMP) return refuse('cold');
-    const ml = Rules.scaleDose(p.doseML, dosePct || 0);
+    const ml = dose;
     if (ctl.tankLeft - ml < TANK_RESERVE) return refuse('tank');
-    if (p.todayML + ml > p.max * p.doseML) return refuse('budget');           // per-pot budget on the UNSCALED class
-    if (todayTotal() + ml > dailyML()) return refuse('budget');              // global daily cap (review #13)
+    if (p.todayML + ml > p.max * dose) return refuse('budget');                                   // per-pot budget: 2 × the dose
+    const capPots = plan ? Rules.potsOf(ctl.rules, plan.id, N_CH).map(k => pots[k]) : pots;         // the plan's daily cap over its own pots
+    if (todayTotal(capPots) + ml > (plan ? plan.dailyML : 10000)) return refuse('budget');          // (review #13)
     const ms = 1000 * ml / ctl.mlPerSec;
     p.vState = 2; emit(); await sleep(500);
     const r = await pumpMs(ms, 'dosing');
@@ -166,19 +177,18 @@ function createMockBackend(config) {
     emit();
     return r.ok ? { ok: true, ml, sec: +(ms / 1000).toFixed(1) } : r;
   }
-  async function runRound(trigger, sched) {          // sched: the schedule line that fired (null = manual run / auto timer)
+  // plan: the plan whose round this is (its own pots only); null = manual run / auto timer → every fitted pot with its own plan.
+  async function runRound(trigger, plan) {
     ctl.pumpRunning = false; pots.forEach(p => { if (p.vState !== 3) p.vState = 3; }); emit(); await sleep(200);
     readAll();
-    // modifiers (app/RULES.md §3.4): evaluated once per round, after sensing; unknown inputs count as false
-    const plan = Rules.roundPlan(ctl.rules, { tempC: ctl.tempEn && ctl.tempOK ? ctl.tempC : null, rainPct: Date.now() - ctl.wxAt < 86400e3 ? ctl.rainPct : null, rainH: ctl.rainH, tankPct: 100 * ctl.tankLeft / TANK_FULL });
-    const nFitted = Math.min(ctl.nSensors, ctl.nServos);
     let watered = 0, skipped = 0, refused = 0;
-    if (plan.skip) { skipped = nFitted; pushEvent({ kind: 'round_skipped', by: plan.skip.if.k, trigger }); }
-    else for (const i of Rules.targets(sched, nFitted)) {
-      const r = await waterPot(i, true, plan.dosePct);
+    for (let i = 0; i < nFitted(); i++) {
+      const pl = plan || (ctl.rules ? Rules.planOf(ctl.rules, i) : null);
+      if (ctl.rules && (!pl || (plan && Rules.potPlanId(ctl.rules, i) !== plan.id))) { if (!pl) skipped++; continue; }   // "off", or another plan's pot
+      const r = await waterPot(i, true, pl);
       if (r.ok) watered++; else if (r.reason === 'wet' || r.reason === 'off') skipped++; else refused++;
     }
-    state.lastRound = { ts: Date.now(), watered, skipped, refused, tankLeft: ctl.tankLeft, tempC: ctl.tempC, trigger, skippedBy: plan.skip ? plan.skip.if.k : undefined, dosePct: plan.dosePct || undefined };
+    state.lastRound = { ts: Date.now(), watered, skipped, refused, tankLeft: ctl.tankLeft, tempC: ctl.tempC, trigger, plan: plan ? plan.id : undefined };
     pushEvent({ kind: 'round', ...state.lastRound });
     emit();
     return { watered, skipped, refused, tankLeft: ctl.tankLeft };
@@ -186,15 +196,15 @@ function createMockBackend(config) {
   function reasonText(r) {
     return { off: 'switched off or not fitted', nopca: 'no PCA9685 — cannot move a valve', uncal: 'not calibrated', implausible: 'implausible reading — sensor unplugged or broken',
       wet: 'wet enough, skipped', cold: 'too cold to water', tank: 'tank counter at the reserve', budget: 'daily budget already used', pump_disabled: 'pump is switched off',
-      aborted: 'aborted', bad_rules: 'the controller rejected the rule set', expired: 'expired — controller was offline', nosuch: 'no such pot' }[r] || r;
+      aborted: 'aborted', bad_rules: 'the controller rejected the watering plan', no_plan: 'no such plan on the controller — apply the plan first', expired: 'expired — controller was offline', nosuch: 'no such pot' }[r] || r;
   }
 
   // ---- command execution (handle()) ----
   async function execute(cmd, args) {
     const p = args && Number.isInteger(args.ch) ? pots[args.ch] : null;
     switch (cmd) {
-      case 'water': return waterPot(args.ch, false, 0);
-      case 'run': return { ok: true, ...(await runRound('cmd')) };
+      case 'water': return waterPot(args.ch, false, ctl.rules ? Rules.planOf(ctl.rules, args.ch) : null);
+      case 'run': return { ok: true, ...(await runRound('cmd', null)) };
       case 'auto': ctl.autoMin = Math.max(0, args.min | 0); ctl.autoLast = Date.now(); return { ok: true, autoMin: ctl.autoMin };
       case 'tank': ctl.tankLeft = args.full ? TANK_FULL : clamp(args.ml | 0, 0, TANK_FULL); pushEvent({ kind: 'refill', tankLeft: ctl.tankLeft }); clear('tank_low'); clear('tank_reserve'); return { ok: true, tankLeft: ctl.tankLeft };
       case 'thr': p.thrPct = clamp(args.pct | 0, 1, 99); return { ok: true, ch: p.i, thrPct: p.thrPct };
@@ -234,18 +244,27 @@ function createMockBackend(config) {
       case 'hwcheck': await sleep(800); return { ok: true, text: 'I2C: 0x40 PCA9685, 0x70 all-call\n1-Wire: idle HIGH, probe responds\nsensors: 15 of 16 plausible (ch 11 open)\npump gate LOW at boot' };
       case 'sweep': return { ok: true, raw: pots.map(q => q.raw) };
       case 'interval': state.device.intervalS = clamp(args.s | 0, 60, 3600); return { ok: true, interval_s: state.device.intervalS };
-      case 'rules': {                                                         // app/RULES.md §2 — validate, apply pots{}, keep the last good set on error
+      case 'rules': {                                                         // app/RULES.md §2 — validate (a v1 document is migrated), keep the last good plan on error
         if (args.clear) { ctl.rules = null; ctl.rulesHash = ''; pushEvent({ kind: 'rules', hash: '' }); return { ok: true, rulesHash: '' }; }
         const r = Rules.fromJSON(args);
         if (!r.ok) return { ok: false, reason: 'bad_rules', detail: r.error };
         const json = Rules.compile(r.rules);
         if (json.length > Rules.LIM.bytes) return { ok: false, reason: 'bad_rules', detail: `too long (${json.length} B)` };
-        Object.keys(r.rules.pots).forEach(k => { const q = pots[+k], s = r.rules.pots[k];
-          if (s.thr !== undefined) q.thrPct = s.thr; if (s.dose !== undefined) q.doseML = s.dose; if (s.max !== undefined) q.max = s.max;
-          if (s.on !== undefined) { q.senEn = s.on; q.valEn = s.on; } });
+        pots.forEach(q => { const pl = Rules.planOf(r.rules, q.i); if (pl) { q.thrPct = pl.thr; q.doseML = pl.dose; } });   // the pot table mirrors its plan (tiles, "Water now (… mL)")
         ctl.rules = r.rules; ctl.rulesHash = Rules.hash(json); ctl.autoLast = Date.now();
         pushEvent({ kind: 'rules', hash: ctl.rulesHash });
-        return { ok: true, rulesHash: ctl.rulesHash, n: { schedule: r.rules.schedule.length, pots: Object.keys(r.rules.pots).length, modifiers: r.rules.modifiers.length } };
+        return { ok: true, rulesHash: ctl.rulesHash, v: 2, planNext: planNext(), n: { plans: r.rules.plans.length, pots: Object.keys(r.rules.pots).length, modifiers: 0 } };
+      }
+      case 'plan_preview': {                                                  // `rules dry <id>` — what a round of that plan would do right now
+        if (!ctl.rules || !Rules.planById(ctl.rules, args.id)) return { ok: false, reason: 'no_plan' };
+        readAll();
+        const pv = Rules.preview(ctl.rules, args.id, world());
+        return { ok: true, plan: pv.plan, would: pv.would, nextAt: pv.nextAt ? Math.floor(pv.nextAt / 1000) : 0 };   // nextAt = epoch seconds like planNext
+      }
+      case 'plan_run': {                                                      // `rules run <id>` — a real round with that plan, now
+        const pl = ctl.rules && Rules.planById(ctl.rules, args.id);
+        if (!pl) return { ok: false, reason: 'no_plan' };
+        return { ok: true, plan: pl.id, ...(await runRound('cmd', pl)), planNext: planNext() };
       }
       case 'weather': ctl.rainPct = clamp(args.rainPct | 0, 0, 100); ctl.rainH = clamp(args.h | 0, 1, 48); ctl.tMaxC = args.tMaxC | 0; ctl.wxAt = Date.now(); return { ok: true, rainPct: ctl.rainPct, h: ctl.rainH };
       case 'reboot': ctl.up = 0; pushEvent({ kind: 'boot', fw: state.device.fw, reason: 'sw' }); return { ok: true };
@@ -254,7 +273,7 @@ function createMockBackend(config) {
   }
 
   const TTL_SHORT = 30 * 60e3, TTL_LONG = 24 * 3600e3;
-  const settingCmds = new Set(['thr', 'dose', 'cal', 'en', 'fit', 'flow', 'vlim', 'auto', 'tank', 'interval', 'save', 'defaults', 'rules', 'weather']);
+  const settingCmds = new Set(['thr', 'dose', 'cal', 'en', 'fit', 'flow', 'vlim', 'auto', 'tank', 'interval', 'save', 'defaults', 'rules', 'weather']);   // plan_preview / plan_run are short-lived like water/run
   let busy = Promise.resolve();
   function sendCommand(cmd, args) {
     const rec = { id: uid(), cmd, args: args || {}, status: 'queued', createdAt: Date.now(), ackedAt: null, result: null,
@@ -286,9 +305,9 @@ function createMockBackend(config) {
     ctl.tempC = 17 + 6 * Math.sin((Date.now() / 3600e3) * Math.PI / 12) + (Math.random() - .5) * .1;
     if (new Date().getDate() !== dayMark) { dayMark = new Date().getDate(); pots.forEach(p => p.todayML = 0); pushEvent({ kind: 'budget_reset' }); }
     const nowMs = Date.now();
-    if (ctl.rules && ctl.rules.schedule.length) {                   // rules present: the schedule lines trigger rounds (app/RULES.md §3.3)
+    if (ctl.rules) {                                                 // a plan is installed: every plan's own times trigger its round (app/RULES.md §5)
       const due = Rules.triggersBetween(ctl.rules, lastTick, nowMs, ctl.autoLast);
-      if (due.length && !offline) { ctl.autoLast = nowMs; const s = due[0].sched; busy = busy.then(() => runRound('rule', s)); }
+      if (due.length && !offline) { ctl.autoLast = nowMs; const pl = due[0].plan; busy = busy.then(() => runRound('rule', pl)); }
     } else if (ctl.autoMin > 0 && !offline && nowMs - ctl.autoLast > ctl.autoMin * 60e3) { ctl.autoLast = nowMs; busy = busy.then(() => runRound('auto', null)); }
     lastTick = nowMs;
   }, 1000);
@@ -306,7 +325,7 @@ function createMockBackend(config) {
     async logout() {},
     session() { return { email: 'household@example.org' }; },
     // history for the charts (backend.js: History shape). Readings/events are the seeded 30 days.
-    async history(days) { return historyFromLocal(state.readings, state.events, days, Date.now()); },
+    async history(days, endOffsetDays) { return historyFromLocal(state.readings, state.events, days, Date.now(), endOffsetDays || 0); },
     // one pot's moisture: simulated forward over the window at a realistic ~1 %/h (not the demo's fast live drift), +45 % at each dose, a little day/night wobble
     async potHistory(ch, days) {
       const p = pots[ch], now = Date.now(), from = Math.floor((now - days * 86400e3) / 3600e3) * 3600e3, ratePerH = 0.7 + 0.2 * (ch % 4);
@@ -330,19 +349,20 @@ function createMockBackend(config) {
       dryOut(i) { pots[i]._true = 10; readAll(); emit(); },
       setForecast(pct) { ctl.rainPct = clamp(pct | 0, 0, 100); ctl.wxAt = Date.now(); emit(); },
       dryRates() { return pots.map(p => p._rate * 3600); },     // % per hour, for the Preview's drying model
-      // 17 fake days for the Glance chart (weather.js chart shape): a rainy spell, one snow day in the cold months, a hot spell, showers the day after tomorrow.
+      // Fake weather for the Glance chart over its whole pannable range, −92 … +7 days (weather.js chart shape): a rainy spell, one snow day
+      // in the cold months, a hot spell, showers the day after tomorrow, and a shower every ninth day further back.
       weatherChart() {
         const now = Date.now(), d0 = new Date(now); d0.setHours(0, 0, 0, 0);
         const winter = d0.getMonth() >= 10 || d0.getMonth() <= 2, base = winter ? 2 : 14;
         const plan = (k) => k >= -9 && k <= -7 ? { code: k === -8 ? 63 : 61, t: base + 3, rain: [5, 20] } : (winter && k === -4) ? { code: 71, t: -2, snow: [8, 16] }
-          : k >= -3 && k <= 0 ? { code: 0, t: base + 16 } : k === 1 ? { code: 2, t: base + 10 } : k === 2 ? { code: 80, t: base + 8, rain: [13, 17] } : { code: [1, 3, 2, 45, 1][Math.abs(k) % 5], t: base + 8 };
-        const days = [], hours = [];
-        for (let k = -14; k <= 2; k++) {
-          const w = plan(k), day = d0.getTime() + k * 86400e3;
-          days.push({ day, code: w.code, tMax: w.t + 1, tMin: w.t - 7 });
-          const band = w.rain || w.snow; if (band) for (let h = band[0]; h < band[1]; h++) hours.push({ ts: day + h * 3600e3, mm: w.snow ? 0.8 : 0.6 + (h % 3) * 0.5, pct: 85, code: w.snow ? 71 : 61 });
+          : k >= -3 && k <= 0 ? { code: 0, t: base + 16 } : k === 1 ? { code: 2, t: base + 10 } : k === 2 ? { code: 80, t: base + 8, rain: [13, 17] }
+          : (k < -14 || k > 2) && k % 9 === 0 ? { code: 61, t: base + 4, rain: [6, 14] } : { code: [1, 3, 2, 45, 1][Math.abs(k) % 5], t: base + 8 + 3 * Math.sin(k / 5) };
+        const days = [];
+        for (let k = -92; k <= 7; k++) {
+          const w = plan(k), day = d0.getTime() + k * 86400e3, band = w.rain || w.snow;
+          days.push({ day, code: w.code, tMax: w.t + 1, tMin: w.t - 7, mm: band ? +((band[1] - band[0]) * (w.snow ? 0.8 : 0.9)).toFixed(1) : 0 });
         }
-        return { days, hours };
+        return { days };
       },
       reasonText,
     },
