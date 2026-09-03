@@ -367,7 +367,9 @@ function createMockBackend(config) {
         const days = [];
         for (let k = -92; k <= 7; k++) {
           const w = plan(k), day = d0.getTime() + k * 86400e3, band = w.rain || w.snow;
-          days.push({ day, code: w.code, tMax: w.t + 1, tMin: w.t - 7, mm: band ? +((band[1] - band[0]) * (w.snow ? 0.8 : 0.9)).toFixed(1) : 0 });
+          const hourly = []; for (let hr = 0; hr < 30; hr++) hourly.push({ ts: day + hr * 3600e3, c: w.t - 3 + 6 * Math.sin((hr - 8) * Math.PI / 12) });   // fake hourly temps: coolest ~02:00, warmest ~14:00 (30 h = this day + the night after it)
+          const dn = Weather.dayNight(hourly)[day];
+          days.push({ day, code: w.code, tMax: w.t + 1, tMin: w.t - 7, mm: band ? +((band[1] - band[0]) * (w.snow ? 0.8 : 0.9)).toFixed(1) : 0, tDay: dn.tDay, tNight: dn.tNight });
         }
         return { days };
       },

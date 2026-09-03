@@ -60,6 +60,13 @@ eq('pots off ok', bad(o => o.pots[3] = 'off'), null);
   eq('fromJSON(compile) == rules', R.fromJSON(j), { ok: true, rules: JSON.parse(j) });
   eq('normalize sorts times and pots, drops default pots', R.normalize({ v: 2, plans: [{ id: 'a', name: '  Def  ', when: { times: ['19:00', '07:00', '07:00'] }, mode: 'x', thr: 35, dose: 250, dailyML: 6000 }], default: 'a', pots: { 5: 'a', 3: 'off', 1: 'off' } }),
     { v: 2, plans: [{ id: 'a', name: 'Def', when: { times: ['07:00', '19:00'] }, mode: 'dry', thr: 35, dose: 250, dailyML: 6000 }], default: 'a', pots: { 1: 'off', 3: 'off' } });
+  eq('doseKind', [R.doseKind(250), R.doseKind(900), R.doseKind(300), R.doseKind(10)], ['small', 'large', 'custom', 'custom']);
+  // `on`: absent or true = on; only `on:false` survives normalize (canonical JSON, after dailyML)
+  const offDoc = { v: 2, plans: [Object.assign({}, DOC.plans[0], { on: true }), Object.assign({}, DOC.plans[1], { on: false })], default: 'a', pots: {} };
+  eq('validate on: bool ok', R.validate(offDoc), null);
+  eq('validate on: not bool', R.validate({ v: 2, plans: [Object.assign({}, DOC.plans[0], { on: 1 })], default: 'a', pots: {} }), 'plans[0].on: true or false');
+  eq('isOn', [R.isOn(offDoc.plans[0]), R.isOn(offDoc.plans[1]), R.isOn(DOC.plans[0])], [true, false, true]);
+  ok('compile omits on:true, keeps on:false last', R.compile(offDoc).includes('"dailyML":8000,"on":false}') && !R.compile(offDoc).includes('"on":true'));
   ok('fromJSON bad json', !R.fromJSON('{').ok);
   ok('fromJSON not object', !R.fromJSON('[]').ok);
   eq('fromJSON error text', R.fromJSON({ v: 2, plans: [{ id: 'a', name: 'A', when: { times: ['07:00'] }, mode: 'dry', thr: 35, dose: 250, dailyML: 6000 }], default: 'b', pots: {} }).error, 'default: must be a plan id');
@@ -152,6 +159,14 @@ const always = { id: 'b', name: 'Every time', when: { times: ['19:00'] }, mode: 
   eq('preview a: skip reasons', pa.would.filter(x => x.action === 'skip').map(x => [x.n, x.why]), [[3, 'wet'], [4, 'wet'], [5, 'wet'], [7, 'wet'], [8, 'wet'], [10, 'wet'], [11, 'off'], [12, 'uncal'], [13, 'off'], [14, 'off'], [15, 'wet']]);
   ok('preview a: pots on plan b are not listed', !pa.would.some(x => x.n <= 2));
   eq('preview a: nextAt', pa.nextAt, new Date(2026, 8, 3, 19, 0).getTime());
+  {
+    const offRules = { v: 2, plans: [dry, Object.assign({}, always, { on: false })], default: 'a', pots: { 0: 'b', 1: 'b', 2: 'b', 11: 'off' } };
+    eq('off plan: no triggers', R.triggersBetween(offRules, T0, T0 + 86400e3, null).map(x => x.plan.id), ['a']);
+    eq('off plan: nextTrigger null', R.nextTrigger(offRules, 'b', T0, null), null);
+    eq('off plan: preview says off', R.preview(offRules, 'b', Object.assign(world(), { nowMs: T0 })), { plan: 'b', would: [], nextAt: null, off: true });
+    const sim = R.simulate(offRules, world(), T0, 24);
+    eq('off plan: simulate notes it and runs only a', [sim.notes[0], sim.rounds.map(x => x.plan)], ['Plan Every time is off.', ['a']]);
+  }
   const pb = R.preview(rules, 'b', Object.assign(world(), { nowMs: T0 }));
   eq('preview b: always waters dry, skips wet, lists the off pot', pb.would, [{ n: 0, action: 'skip', why: 'wet' }, { n: 1, action: 'skip', why: 'wet' }, { n: 2, action: 'water', why: 'always', ml: 250 }, { n: 11, action: 'skip', why: 'off' }]);
   eq('preview unknown plan', R.preview(rules, 'c', world()), null);

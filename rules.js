@@ -14,6 +14,10 @@
 const LIM = { thr: [1, 99], dose: [10, 2000], dailyML: [500, 20000], everyMin: [60, 10080], nTimes: 4, nPlans: 4, nameLen: 16, bytes: 2048 };
 const IDS = ['a', 'b', 'c', 'd'];
 const DOSE_WORD = { small: 250, large: 900 };
+// The "How much" chip a dose belongs to: 250 → small, 900 → large, anything else → custom (shown with its value).
+function doseKind(ml) { return ml === DOSE_WORD.small ? 'small' : ml === DOSE_WORD.large ? 'large' : 'custom'; }
+// on(plan): a plan is on unless it carries `on: false` (rules v2, firmware 0.4.2). Off = its schedule never fires; its pots are not watered by schedule.
+function isOn(plan) { return !!plan && plan.on !== false; }
 const N_CH = 16;
 const POT_BUDGET_DOSES = 2;          // interlock: a pot gets at most 2 × its plan's dose per day (firmware maxDoses)
 
@@ -44,6 +48,7 @@ function validate(o) {
     if (!inRange(p.thr, LIM.thr)) return `${at}.thr: ${LIM.thr[0]}–${LIM.thr[1]}`;
     if (!inRange(p.dose, LIM.dose)) return `${at}.dose: ${LIM.dose[0]}–${LIM.dose[1]}`;
     if (!inRange(p.dailyML, LIM.dailyML)) return `${at}.dailyML: ${LIM.dailyML[0]}–${LIM.dailyML[1]}`;
+    if (p.on !== undefined && typeof p.on !== 'boolean') return `${at}.on: true or false`;
   }
   if (!seen.has(o.default)) return 'default: must be a plan id';
   if (!o.pots || typeof o.pots !== 'object' || Array.isArray(o.pots)) return 'pots: must be an object';
@@ -53,13 +58,17 @@ function validate(o) {
   }
   return null;
 }
-// A fresh object in canonical shape and key order (deterministic JSON). Pots pointing at the default are dropped.
+// A fresh object in canonical shape and key order (deterministic JSON). Pots pointing at the default are dropped; `on` appears only when false.
 function normalize(o) {
-  const plans = (o.plans || []).map(p => ({
-    id: p.id, name: String(p.name || '').trim().slice(0, LIM.nameLen) || 'Plan',
-    when: p.when && p.when.everyMin !== undefined ? { everyMin: p.when.everyMin } : { times: [...new Set((p.when && p.when.times) || [])].sort() },
-    mode: p.mode === 'always' ? 'always' : 'dry', thr: p.thr, dose: p.dose, dailyML: p.dailyML,
-  }));
+  const plans = (o.plans || []).map(p => {
+    const q = {
+      id: p.id, name: String(p.name || '').trim().slice(0, LIM.nameLen) || 'Plan',
+      when: p.when && p.when.everyMin !== undefined ? { everyMin: p.when.everyMin } : { times: [...new Set((p.when && p.when.times) || [])].sort() },
+      mode: p.mode === 'always' ? 'always' : 'dry', thr: p.thr, dose: p.dose, dailyML: p.dailyML,
+    };
+    if (p.on === false) q.on = false;
+    return q;
+  });
   const pots = {};
   Object.keys(o.pots || {}).map(Number).sort((a, b) => a - b).forEach(ch => { const v = o.pots[ch]; if (v !== undefined && v !== o.default) pots[ch] = v; });
   return { v: 2, plans, default: o.default, pots };
@@ -101,10 +110,11 @@ function potsOf(rules, id, nFitted) { const out = []; for (let i = 0; i < nFitte
 function nextId(rules) { return IDS.find(id => !planById(rules, id)) || null; }
 
 // ---------------------------------------------------------------- triggers
-// Every plan's rounds in (fromMs, toMs]: [{ t, plan }] in time order. lastRoundMs feeds the interval form.
+// Every ON plan's rounds in (fromMs, toMs]: [{ t, plan }] in time order. lastRoundMs feeds the interval form. Off plans never fire.
 function triggersBetween(rules, fromMs, toMs, lastRoundMs) {
   const out = [];
   (rules && rules.plans ? rules.plans : []).forEach(plan => {
+    if (!isOn(plan)) return;
     const w = plan.when || {};
     if (w.everyMin) {
       let t = (lastRoundMs || fromMs) + w.everyMin * 60e3;
@@ -149,6 +159,7 @@ function decide(plan, p, world, planTodayML) {
 // does not exist. Lists the plan's own pots plus every pot set "off" (so the household sees where the water is NOT going).
 function preview(rules, planId, world) {
   const plan = planById(rules, planId); if (!plan) return null;
+  if (!isOn(plan)) return { plan: planId, would: [], nextAt: null, off: true };   // an off plan waters nothing: "plan X is off"
   const would = []; let planToday = 0;
   world.pots.forEach(p => { if (p.i < world.nFitted && potPlanId(rules, p.i) === planId) planToday += p.todayML || 0; });
   for (let i = 0; i < world.nFitted; i++) {
@@ -169,6 +180,7 @@ function simulate(rules, world, fromMs, hours) {
   const planToday = {}; pots.forEach(p => { if (p.i < world.nFitted) { const id = potPlanId(rules, p.i); planToday[id] = (planToday[id] || 0) + (p.todayML || 0); } });
   const trig = triggersBetween(rules, fromMs, toMs, world.lastRoundMs);
   const notes = [];
+  (rules.plans || []).forEach(p => { if (!isOn(p)) notes.push(`Plan ${p.name} is off.`); });
   if (!trig.length) notes.push('No round falls in the next 24 h.');
   const rounds = []; let lastT = fromMs; let dayMark = new Date(fromMs).getDate();
   for (const tr of trig) {
@@ -208,7 +220,7 @@ function worldFrom(state, nowMs) {
     minTempC: c.minTempC, mlPerSec: t.mlPerSec || 30, maxPumpMs: c.maxPumpMs, havePCA: state.device.havePCA !== false, lastRoundMs: state.lastRound ? state.lastRound.ts : null, nowMs: nowMs || Date.now() };
 }
 
-const Rules = { LIM, IDS, DOSE_WORD, POT_BUDGET_DOSES, empty, defaultPlan, validate, normalize, compile, hash, migrate, fromJSON,
+const Rules = { LIM, IDS, DOSE_WORD, POT_BUDGET_DOSES, doseKind, isOn, empty, defaultPlan, validate, normalize, compile, hash, migrate, fromJSON,
   planById, potPlanId, planOf, potsOf, nextId, triggersBetween, nextTrigger, decide, preview, simulate, worldFrom, planStatus };
 if (typeof module !== 'undefined' && module.exports) module.exports = Rules; else root.Rules = Rules;
 })(typeof window !== 'undefined' ? window : globalThis);

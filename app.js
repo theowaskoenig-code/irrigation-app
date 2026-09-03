@@ -28,6 +28,7 @@ function chip(cls, label) { return `<span class="tag ${cls}">${SYM[cls] || ''} $
 function autoText(min) { return min >= 60 ? (min / 60) + ' h' : min + ' min'; }
 function nextRound() {
   const t = state.telemetry;
+  ruLoad(); if (RU.rules && RU.rules.plans.length && !RU.rules.plans.some(Rules.isOn)) return { v: 'All plans off', s: 'switch one on in the watering plan' };   // off plans never fire
   if (!t.autoMin && !t.nextRoundAt) return { v: 'Auto off', s: 'start a round from Control' };   // the watering plan sets nextRoundAt with auto off
   const ms = t.nextRoundAt - Date.now();
   if (ms <= 0) return { v: 'due now', s: 'waiting for the controller' };
@@ -137,19 +138,22 @@ function chartWeather() {
 // count inside when there is room, the value on today's bar); RAIN in mm per day hanging down from the top strip as light-blue
 // bars (never more than a quarter of the plot); the TANK level as a thin line over everything (0 … full = the plot height, its
 // litres at the dot) with refill markers; a TOP STRIP per day with the weekday name (today bold), the weather icon and the
-// 3-step temperature colour band behind it (cool < 15 °C · mild 15–25 · hot > 25). Left axis = litres/day. The window is
+// day/night average °C (06–22 over 22–06; the balcony's measured hours where history() has them, darker ink; else the forecast)
+// and the 3-step colour band by the DAY average (cool < 15 °C · mild 15–25 · hot > 25). Left axis = litres/day. The window is
 // what history() returned (span + 2 days, pannable with ◀ today ▶); the "now" marks only when today is in view.
 function tankChart(h) {
   const now = Date.now(), wx = chartWeather(), CPR2 = 14, t = state.telemetry, full = state.config.tankFull;
   const t0 = h.from, t1 = h.from + h.days * DAY_MS, nowIn = now >= t0 && now <= t1, today = new Date(); today.setHours(0, 0, 0, 0);
   const x = (ts) => CPL + (ts - t0) / (t1 - t0) * (CW - CPL - CPR2), clampX = (ts) => x(Math.min(t1, Math.max(t0, ts))), dx = x(t0 + DAY_MS) - x(t0), mid = (day) => x(day + DAY_MS / 2);
   const wxd = wx ? wx.days.filter(d => d.day >= t0 && d.day < t1) : [], icons = wxd.length > 0 && dx >= 22;
-  const TS = icons ? 40 : 16, P0 = TS + 4, H = 130, P1 = P0 + H, bw = dx * 0.62;
+  const TS = icons ? 62 : 16, P0 = TS + 4, H = 130, P1 = P0 + H, bw = dx * 0.62;
   let s = daySeps(x, t0, h.days, 0, P1);
-  // -- top strip: temperature band, weekday, icon
-  if (icons) wxd.forEach(d => { if (d.tMax !== null && d.tMax !== undefined) s += `<rect class="${d.tMax < 15 ? 'tcool' : d.tMax <= 25 ? 'tmild' : 'thot'}" x="${x(d.day).toFixed(1)}" y="0" width="${dx.toFixed(1)}" height="${TS}"/>`; });
+  // -- top strip: temperature band (by the day average), weekday, icon, day °C over night °C
+  const meas = Weather.dayNight(h.temp), dn = (d) => { const m = meas[d.day] || {}, md = m.nDay >= 8, mn = m.nNight >= 4; return { day: md ? m.tDay : d.tDay, night: mn ? m.tNight : d.tNight, mDay: md, mNight: mn }; };   // measured when at least half the hours are there
+  if (icons) wxd.forEach(d => { const v = dn(d).day; if (v !== null && v !== undefined) s += `<rect class="${v < 15 ? 'tcool' : v <= 25 ? 'tmild' : 'thot'}" x="${x(d.day).toFixed(1)}" y="0" width="${dx.toFixed(1)}" height="${TS}"/>`; });
   for (let day = t0; day < t1; day += DAY_MS) { const wd = new Date(day).getDay(); if (dx >= 22 || wd === 1) s += `<text class="lbl${day === today.getTime() ? ' today' : ''}" x="${mid(day).toFixed(1)}" y="12" text-anchor="middle">${WD[wd]}</text>`; }
   if (icons) wxd.forEach(dd => { const k = wxKind(dd.code); if (k) s += wxIcon(k, mid(dd.day) - 9, 18, 18, dd.day <= now && now < dd.day + DAY_MS ? 'today' : ''); });
+  if (icons) wxd.forEach(dd => { const v = dn(dd), deg = (c) => c === null || c === undefined ? '' : `${Math.round(c)}°`; s += `<text class="tdn${v.mDay ? ' meas' : ''}" x="${mid(dd.day).toFixed(1)}" y="46" text-anchor="middle">${deg(v.day)}</text><text class="tdn${v.mNight ? ' meas' : ''}" x="${mid(dd.day).toFixed(1)}" y="60" text-anchor="middle">${deg(v.night)}</text>`; });
   if (now < t1) s += `<rect class="future" x="${clampX(now).toFixed(1)}" y="${P0}" width="${(x(t1) - clampX(now)).toFixed(1)}" height="${H}"/>`;
   // -- watering: litres per day, up from the bottom (the tallest bar reaches ~70 % so it never meets the rain)
   const maxL = Math.max(0.5, ...h.perDay.map(dd => dd.ml / 1000)) / 0.7, yL = (l) => P1 - l / maxL * H;
@@ -181,7 +185,7 @@ function tankChart(h) {
     s += `<circle class="now" cx="${x(now).toFixed(1)}" cy="${yT(t.tankLeft).toFixed(1)}" r="4"/><text class="lbl acc" x="${(x(now) + (right ? 7 : -7)).toFixed(1)}" y="${(yT(t.tankLeft) + 4).toFixed(1)}" text-anchor="${right ? 'start' : 'end'}">${litres(t.tankLeft)} L</text>`;
   }
   s += `<line class="grid" x1="${CPL}" x2="${CW - CPR2}" y1="${P1}" y2="${P1}"/>`;
-  const legend = `<div class="wxlegend"><span><svg viewBox="0 0 16 16"><rect class="wbar" x="4" y="4" width="8" height="10"/></svg>watered</span><span>·</span>${wxd.length ? `<span><svg viewBox="0 0 16 16"><rect class="rain" x="4" y="2" width="8" height="9"/></svg>rain</span><span>·</span>` : ''}<span><svg viewBox="0 0 16 16"><path class="tank" d="M1 11 L6 9 L10 10 L15 4"/></svg>tank</span><span><svg viewBox="0 0 16 16"><polygon class="refill" points="2,3 14,3 8,13"/></svg>refill</span>${wxd.length ? `<span>·</span><span>temperature</span><span><svg viewBox="0 0 16 16"><rect class="tcool" x="1" y="3" width="14" height="10"/></svg>cool</span><span><svg viewBox="0 0 16 16"><rect class="tmild" x="1" y="3" width="14" height="10"/></svg>mild</span><span><svg viewBox="0 0 16 16"><rect class="thot" x="1" y="3" width="14" height="10"/></svg>hot</span>` : ''}</div>`;
+  const legend = `<div class="wxlegend"><span><svg viewBox="0 0 16 16"><rect class="wbar" x="4" y="4" width="8" height="10"/></svg>watered</span><span>·</span>${wxd.length ? `<span><svg viewBox="0 0 16 16"><rect class="rain" x="4" y="2" width="8" height="9"/></svg>rain</span><span>·</span>` : ''}<span><svg viewBox="0 0 16 16"><path class="tank" d="M1 11 L6 9 L10 10 L15 4"/></svg>tank</span><span><svg viewBox="0 0 16 16"><polygon class="refill" points="2,3 14,3 8,13"/></svg>refill</span>${wxd.length ? `<span>·</span><span>day average</span><span><svg viewBox="0 0 16 16"><rect class="tcool" x="1" y="3" width="14" height="10"/></svg>cool</span><span><svg viewBox="0 0 16 16"><rect class="tmild" x="1" y="3" width="14" height="10"/></svg>mild</span><span><svg viewBox="0 0 16 16"><rect class="thot" x="1" y="3" width="14" height="10"/></svg>hot</span><span>·</span><span>°C day over night</span>` : ''}</div>`;
   return `<div class="chead"><span class="l">Watered · L per day</span><span class="l">tank 0 – ${litres(full)} L · ${h.days} d</span></div>
   <svg viewBox="0 0 ${CW} ${P1 + 6}" role="img" aria-label="Litres watered per day, rain, tank level and weather over ${h.days} days">${s}</svg>
   ${legend}`;
