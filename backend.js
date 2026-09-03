@@ -15,7 +15,9 @@
 //                                 transport error (not on a refused watering —
 //                                 that is ok:false with result.reason).
 //   ackAlert(idOrAll)          -> 'all' or an alert id
-//   setHousehold(patch)        -> household-only settings (pot names, ntfy topic)
+//   setHousehold(patch)        -> household-only settings (pot names, ntfy topic, weather location)
+//   history(days)              -> the charts' data for the last N days (14 / 30): see History shape below
+//   potHistory(ch, days)       -> one pot's moisture history: { days, moisture:[{ts,pct}], doses:[{ts,ml}], note? }
 //   login(email, pw) / logout() / session() -> auth (mock: always logged in)
 //   isMock                     -> boolean (UI shows mock-only controls)
 //
@@ -28,12 +30,15 @@
 //                maxPumpMs }
 //   pots:      [16 × { i, raw, pct, sState, vState, todayML, air, water,
 //                      thrPct, doseML, senEn, valEn }]
-//   household: { potNames: {}, ntfyTopic }
+//   household: { potNames: {}, ntfyTopic, weatherLoc: {lat, lon, label} | null (null = the default in weather.js) }
 //   lastRound: { ts, watered, skipped, refused, tankLeft, tempC, trigger } | null
 //   alerts:    [{ id, ts, key, kind, severity, ch, message, active, ackedAt }]
 //   commands:  [{ id, cmd, args, status, createdAt, ackedAt, result }]  (newest first)
 //   events:    [{ id, ts, kind, ch, ... }]                                (newest first)
-//   readings:  [{ ts, tankLeft, tempC }]   (tank sparkline; the Glance chart is drawn from round/refill/dose events)
+//   readings:  [{ ts, tankLeft, tempC }]   (the last days of telemetry; the charts use history() instead)
+//
+// History shape (history(days)): { days, from (ms, local midnight days-1 ago), tank:[{ts,ml}] hourly, temp:[{ts,c}] hourly,
+//   perDay:[{day (ms), ml}] one per day, refills:[ts], partial (true when only the local ring/last days were available), note? }
 
 // ↓↓↓ Theo: paste your two values here (Supabase → Project Settings → API), then change 'mock' to 'supabase'.
 const CONFIG = {
@@ -66,6 +71,23 @@ function connState(device, now) {
   if (age > 3 * device.intervalS) return 'offline';
   if (age > 2 * device.intervalS) return 'stale';
   return 'online';
+}
+
+// The charts' data from what a backend already holds in memory (readings + events): hourly buckets and per-day sums.
+// mock.js and lan.js use it directly; supabase.js uses it as the fallback while history.sql is not installed.
+function historyFromLocal(readings, events, days, now) {
+  const DAY = 86400e3, d0 = new Date(now); d0.setHours(0, 0, 0, 0);
+  const from = d0.getTime() - (days - 1) * DAY, buckets = new Map();
+  readings.forEach(r => {
+    if (r.ts < from) return;
+    const h = Math.floor(r.ts / 3600e3); let b = buckets.get(h); if (!b) buckets.set(h, b = { ts: h * 3600e3, ml: 0, n: 0, c: 0, nc: 0 });
+    b.ml += r.tankLeft; b.n++; if (typeof r.tempC === 'number' && Number.isFinite(r.tempC)) { b.c += r.tempC; b.nc++; }
+  });
+  const bs = [...buckets.values()].sort((a, b) => a.ts - b.ts);
+  const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: from + i * DAY, ml: 0 });
+  events.forEach(e => { if (e.kind === 'dose' && e.ts >= from) perDay[Math.min(days - 1, Math.floor((e.ts - from) / DAY))].ml += e.ml || 0; });
+  return { days, from, tank: bs.map(b => ({ ts: b.ts, ml: Math.round(b.ml / b.n) })), temp: bs.filter(b => b.nc).map(b => ({ ts: b.ts, c: +(b.c / b.nc).toFixed(1) })),
+    perDay, refills: events.filter(e => e.kind === 'refill' && e.ts >= from).map(e => e.ts).sort((a, b) => a - b) };
 }
 
 // Litres/day from the last 7 days of dose events; null when there is no history.

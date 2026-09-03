@@ -3,7 +3,9 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 let backend, state, screen = 'glance', sheet = null, hwText = '';
-const SCREENS = ['glance', 'pots', 'tank', 'alerts', 'control', 'settings', 'rules'];   // rules = full-width screen behind Control (rules-ui.js)
+const SCREENS = ['glance', 'pots', 'tank', 'alerts', 'control', 'settings', 'rules', 'bench'];   // rules = Watering plan, bench = Test bench: full-width screens behind Control
+const HIST = { days: 14, data: null, key: '', at: 0, loading: null, err: null, pot: {}, topEvent: null };   // history() cache (charts) + per-pot moisture
+const TB = { liveUntil: 0, prevIntervalS: null, lastSec: 5 };                                              // Test bench: cloud "live for 5 minutes"
 
 // ---------------------------------------------------------------- formatting
 function ago(ts) {
@@ -15,6 +17,7 @@ function ago(ts) {
   return `${Math.round(s / 86400)} d ago`;
 }
 function when(ts) { const d = new Date(ts); return d.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' }); }
+function whenDate(ts) { const d = new Date(ts); return d.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
 function litres(ml) { return (ml / 1000).toFixed(ml < 2000 ? 2 : 1); }
 function upStr(s) { const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d} d ${h} h` : `${h} h ${m} min`; }
 function potName(i) { const n = state.household.potNames[i]; return n ? `${i + 1} · ${n}` : `Pot ${i + 1}`; }
@@ -24,7 +27,7 @@ function chip(cls, label) { return `<span class="tag ${cls}">${SYM[cls] || ''} $
 function autoText(min) { return min >= 60 ? (min / 60) + ' h' : min + ' min'; }
 function nextRound() {
   const t = state.telemetry;
-  if (!t.autoMin && !t.nextRoundAt) return { v: 'Auto off', s: 'start a round from Control' };   // a rule schedule sets nextRoundAt with auto off
+  if (!t.autoMin && !t.nextRoundAt) return { v: 'Auto off', s: 'start a round from Control' };   // the watering plan sets nextRoundAt with auto off
   const ms = t.nextRoundAt - Date.now();
   if (ms <= 0) return { v: 'due now', s: 'waiting for the controller' };
   const h = Math.floor(ms / 3600e3), m = Math.round(ms % 3600e3 / 60e3);
@@ -37,6 +40,7 @@ function themeApply(v) {
   if (v === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', v);
   try { localStorage.setItem('theme', v); } catch (e) { /* private mode */ }
 }
+function isCloud() { return !backend.isMock && !backend.lan; }
 
 // Sensor state → { cls, label } used by tiles, tags and rows.
 function potState(p) {
@@ -69,7 +73,7 @@ async function cmd(name, args, label) {
   toast(conn === 'offline' ? `${label} — queued, controller offline` : `${label}…`);
   try {
     const rec = await backend.sendCommand(name, args);
-    if (rec.status === 'acked') toast(`${label} — done${rec.result && rec.result.ml ? ` (${rec.result.ml} mL, ${rec.result.sec} s)` : ''}`);
+    if (rec.status === 'acked') toast(`${label} — done${rec.result && rec.result.ml ? ` (${rec.result.ml} mL, ${rec.result.sec} s)` : rec.result && typeof rec.result.tempC === 'number' ? ` (${rec.result.tempC.toFixed(1)} °C)` : ''}`);
     else if (rec.status === 'expired') toast(`${label} — expired, controller was offline`, 4000);
     else toast(`${label} — refused: ${reasonText(rec.result && rec.result.reason)}`, 4500);
     if (rec.result && rec.result.text) { hwText = rec.result.text; render(); }
@@ -77,37 +81,101 @@ async function cmd(name, args, label) {
   } catch (e) { toast(`${label} — failed: ${e.message}`, 4500); }
 }
 
-// ---------------------------------------------------------------- screens
-// Tank level (steps down at every round, up at every refill) over litres dosed per day — 14 days, one time axis, from events.
-function tankChart() {
-  const now = Date.now(), SPAN = 14, W = 520, padL = 36, padR = 14, top = 8, H1 = 80, gap = 24, H2 = 50, axis = 18, DAY = 86400e3;
-  const full = state.config.tankFull, t = state.telemetry;
-  const today0 = new Date(now); today0.setHours(0, 0, 0, 0);
-  const t0 = today0.getTime() - (SPAN - 1) * DAY, t1 = today0.getTime() + DAY;
-  const x = (ts) => padL + (ts - t0) / (t1 - t0) * (W - padL - padR), y1 = (ml) => top + H1 - ml / full * H1;
-  const isLevel = (e) => e.kind === 'round' || e.kind === 'refill';
-  const evs = state.events.filter(e => isLevel(e) && e.ts >= t0).sort((a, b) => a.ts - b.ts);
-  const before = state.events.find(e => isLevel(e) && e.ts < t0);      // events are newest first
-  let level = before ? before.tankLeft : evs.length ? evs[0].tankLeft : t.tankLeft, s = '';
-  [0, full / 2, full].forEach(v => { s += `<line class="grid" x1="${padL}" x2="${W - padR}" y1="${y1(v).toFixed(1)}" y2="${y1(v).toFixed(1)}"/><text class="lbl" x="${padL - 4}" y="${(y1(v) + 4).toFixed(1)}" text-anchor="end">${v / 1000}</text>`; });
-  let d = `M${x(t0).toFixed(1)} ${y1(level).toFixed(1)}`;
-  evs.forEach(e => { const X = x(e.ts).toFixed(1); d += ` L${X} ${y1(level).toFixed(1)} L${X} ${y1(e.tankLeft).toFixed(1)}`; level = e.tankLeft; });
-  d += ` L${x(now).toFixed(1)} ${y1(level).toFixed(1)}`;
-  if (level !== t.tankLeft) d += ` L${x(now).toFixed(1)} ${y1(t.tankLeft).toFixed(1)}`;   // level set by hand since the last round
+// ---------------------------------------------------------------- history (charts) — fetched from the backend, cached, refreshed when a new event arrives
+function histEnsure(days) {
+  const key = `${days}`, stale = HIST.key !== key || Date.now() - HIST.at > 5 * 60e3;
+  if (!stale || HIST.loading === key) return;
+  HIST.loading = key;
+  backend.history(days).then(d => { HIST.data = d; HIST.key = key; HIST.err = null; }).catch(e => { HIST.err = e.message; HIST.key = key; })
+    .finally(() => { HIST.at = Date.now(); HIST.loading = null; render(); });
+}
+function potHistEnsure(i) {
+  const c = HIST.pot[i];
+  if (c && (c.loading || Date.now() - c.at < 5 * 60e3)) return;
+  HIST.pot[i] = { ...(c || {}), loading: true };
+  backend.potHistory(i, 14).then(d => { HIST.pot[i] = { data: d, at: Date.now() }; }).catch(e => { HIST.pot[i] = { err: e.message, at: Date.now() }; }).finally(render);
+}
+function histInvalidate() { HIST.at = 0; Object.keys(HIST.pot).forEach(k => { if (!HIST.pot[k].loading) HIST.pot[k].at = 0; }); }
+
+// ---------------------------------------------------------------- charts (inline SVG, 520 wide)
+const CW = 520, CPL = 36, CPR = 14, DAY_MS = 86400e3;
+function xAxisLabels(from, days, y) {
+  const marks = days > 14 ? [-21, -14, -7, 0] : [-7, 0], today = from + (days - 1) * DAY_MS, x = (ts) => CPL + (ts - from) / (days * DAY_MS) * (CW - CPL - CPR);
+  return marks.filter(d => today + d * DAY_MS >= from).map(d => `<text class="lbl" x="${x(today + d * DAY_MS + DAY_MS / 2).toFixed(1)}" y="${y}" text-anchor="middle">${d ? `−${-d} d` : 'today'}</text>`).join('');
+}
+// Tank level (hourly) over litres dosed per day — one time axis, from history().
+function tankChart(h) {
+  const now = Date.now(), SPAN = h.days, top = 8, H1 = 80, gap = 24, H2 = 50, axis = 18;
+  const full = state.config.tankFull, t = state.telemetry, t0 = h.from, t1 = h.from + SPAN * DAY_MS;
+  const x = (ts) => CPL + (ts - t0) / (t1 - t0) * (CW - CPL - CPR), y1 = (ml) => top + H1 - ml / full * H1;
+  let s = '';
+  [0, full / 2, full].forEach(v => { s += `<line class="grid" x1="${CPL}" x2="${CW - CPR}" y1="${y1(v).toFixed(1)}" y2="${y1(v).toFixed(1)}"/><text class="lbl" x="${CPL - 4}" y="${(y1(v) + 4).toFixed(1)}" text-anchor="end">${v / 1000}</text>`; });
+  const pts = h.tank.filter(p => p.ts >= t0 && p.ts <= now);
+  let d = '', last = t.tankLeft;
+  if (pts.length) { d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.ts).toFixed(1)} ${y1(p.ml).toFixed(1)}`).join(' '); last = pts[pts.length - 1].ml; d += ` L${x(now).toFixed(1)} ${y1(last).toFixed(1)}`; }
+  else d = `M${x(Math.max(t0, now - 3600e3)).toFixed(1)} ${y1(last).toFixed(1)} L${x(now).toFixed(1)} ${y1(last).toFixed(1)}`;
+  if (last !== t.tankLeft) d += ` L${x(now).toFixed(1)} ${y1(t.tankLeft).toFixed(1)}`;   // level changed since the last hourly point (a round or a refill just now)
   s += `<path class="tank" d="${d}"/>`;
-  evs.filter(e => e.kind === 'refill').forEach(e => { const X = x(e.ts); s += `<polygon class="refill" points="${(X - 6).toFixed(1)},${top + H1} ${(X + 6).toFixed(1)},${top + H1} ${X.toFixed(1)},${top + H1 - 10}"/><text class="lbl wet" x="${(X < padL + 60 ? X + 8 : X - 8).toFixed(1)}" y="${top + H1 - 2}" text-anchor="${X < padL + 60 ? 'start' : 'end'}">refill</text>`; });
+  h.refills.forEach(ts => { const X = x(ts); s += `<polygon class="refill" points="${(X - 6).toFixed(1)},${top + H1} ${(X + 6).toFixed(1)},${top + H1} ${X.toFixed(1)},${top + H1 - 10}"/><text class="lbl wet" x="${(X < CPL + 60 ? X + 8 : X - 8).toFixed(1)}" y="${top + H1 - 2}" text-anchor="${X < CPL + 60 ? 'start' : 'end'}">refill</text>`; });
   s += `<circle class="now" cx="${x(now).toFixed(1)}" cy="${y1(t.tankLeft).toFixed(1)}" r="5"/><text class="lbl acc" x="${(x(now) - 8).toFixed(1)}" y="${(y1(t.tankLeft) + (y1(t.tankLeft) + 22 > top + H1 ? -9 : 17)).toFixed(1)}" text-anchor="end">${litres(t.tankLeft)} L</text>`;
-  const days = []; for (let i = 0; i < SPAN; i++) days.push({ start: t0 + i * DAY, ml: 0 });
-  state.events.forEach(e => { if (e.kind !== 'dose' || e.ts < t0) return; const dd = days[Math.min(SPAN - 1, Math.floor((e.ts - t0) / DAY))]; dd.ml += e.ml || 0; });
-  const maxL = Math.max(0.5, ...days.map(dd => dd.ml / 1000)) * 1.15, b0 = top + H1 + gap, y2 = (l) => b0 + H2 - l / maxL * H2;
-  const dx = (W - padL - padR) / SPAN, bw = dx * 0.62;
-  days.forEach(dd => { const l = dd.ml / 1000; if (l > 0) s += `<rect class="bar" x="${(x(dd.start + DAY / 2) - bw / 2).toFixed(1)}" y="${y2(l).toFixed(1)}" width="${bw.toFixed(1)}" height="${(l / maxL * H2).toFixed(1)}" rx="1"/>`; });
-  s += `<line class="grid" x1="${padL}" x2="${W - padR}" y1="${b0 + H2}" y2="${b0 + H2}"/><text class="lbl" x="${padL - 4}" y="${b0 + 3}" text-anchor="end">${maxL.toFixed(1)}</text>`;
-  [-7, 0].forEach(dd => { s += `<text class="lbl" x="${x(today0.getTime() + dd * DAY + DAY / 2).toFixed(1)}" y="${b0 + H2 + 13}" text-anchor="middle">${dd ? `−${-dd} d` : 'today'}</text>`; });
+  const maxL = Math.max(0.5, ...h.perDay.map(dd => dd.ml / 1000)) * 1.15, b0 = top + H1 + gap, y2 = (l) => b0 + H2 - l / maxL * H2;
+  const dx = (CW - CPL - CPR) / SPAN, bw = dx * 0.62;
+  h.perDay.forEach(dd => { const l = dd.ml / 1000; if (l > 0) s += `<rect class="bar" x="${(x(dd.day + DAY_MS / 2) - bw / 2).toFixed(1)}" y="${y2(l).toFixed(1)}" width="${bw.toFixed(1)}" height="${(l / maxL * H2).toFixed(1)}" rx="1"/>`; });
+  s += `<line class="grid" x1="${CPL}" x2="${CW - CPR}" y1="${b0 + H2}" y2="${b0 + H2}"/><text class="lbl" x="${CPL - 4}" y="${b0 + 3}" text-anchor="end">${maxL.toFixed(1)}</text>`;
+  s += xAxisLabels(t0, SPAN, b0 + H2 + 13);
   return `<div class="chead"><span class="l">Tank · L</span><span class="l">Dosed / day · ${SPAN} d</span></div>
-  <svg viewBox="0 0 ${W} ${b0 + H2 + axis}" role="img" aria-label="Tank level and litres dosed per day over ${SPAN} days">${s}</svg>`;
+  <svg viewBox="0 0 ${CW} ${b0 + H2 + axis}" role="img" aria-label="Tank level and litres dosed per day over ${SPAN} days">${s}</svg>`;
+}
+// Temperature, hourly, over the same span.
+function tempChart(h) {
+  const top = 8, H = 70, axis = 18, t0 = h.from, t1 = h.from + h.days * DAY_MS, pts = h.temp.filter(p => p.ts >= t0);
+  if (pts.length < 2) return `<div class="chead"><span class="l">Temperature · °C</span></div><div class="faint" style="font-size:14px">no temperature history yet</div>`;
+  const lo = Math.floor(Math.min(0, ...pts.map(p => p.c)) / 5) * 5, hi = Math.ceil(Math.max(10, ...pts.map(p => p.c)) / 5) * 5;
+  const x = (ts) => CPL + (ts - t0) / (t1 - t0) * (CW - CPL - CPR), y = (c) => top + H - (c - lo) / (hi - lo) * H;
+  let s = '';
+  [lo, hi].forEach(v => { s += `<line class="grid" x1="${CPL}" x2="${CW - CPR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="lbl" x="${CPL - 4}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${v}</text>`; });
+  const f = state.config.minTempC; if (f > lo) s += `<line class="floor" x1="${CPL}" x2="${CW - CPR}" y1="${y(f).toFixed(1)}" y2="${y(f).toFixed(1)}"/><text class="lbl" x="${CW - CPR}" y="${(y(f) - 3).toFixed(1)}" text-anchor="end">frost ${f} °C</text>`;
+  s += `<path class="temp" d="${pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.ts).toFixed(1)} ${y(p.c).toFixed(1)}`).join(' ')}"/>`;
+  s += xAxisLabels(t0, h.days, top + H + 13);
+  return `<div class="chead"><span class="l">Temperature · °C</span><span class="l">${Math.min(...pts.map(p => p.c)).toFixed(1)} – ${Math.max(...pts.map(p => p.c)).toFixed(1)} °C</span></div>
+  <svg viewBox="0 0 ${CW} ${top + H + axis}" role="img" aria-label="Temperature over ${h.days} days">${s}</svg>`;
+}
+// One pot's moisture (hourly) with its threshold and a marker at every dose.
+function moistureChart(ph, thrPct) {
+  const now = Date.now(), days = ph.days, top = 8, H = 80, axis = 18, d0 = new Date(now); d0.setHours(0, 0, 0, 0);
+  const t0 = d0.getTime() - (days - 1) * DAY_MS, t1 = t0 + days * DAY_MS;
+  const x = (ts) => CPL + (ts - t0) / (t1 - t0) * (CW - CPL - CPR), y = (p) => top + H - p / 100 * H, pts = ph.moisture.filter(p => p.ts >= t0);
+  let s = '';
+  [0, 50, 100].forEach(v => { s += `<line class="grid" x1="${CPL}" x2="${CW - CPR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="lbl" x="${CPL - 4}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${v}</text>`; });
+  s += `<line class="floor" x1="${CPL}" x2="${CW - CPR}" y1="${y(thrPct).toFixed(1)}" y2="${y(thrPct).toFixed(1)}"/><text class="lbl" x="${CW - CPR}" y="${(y(thrPct) - 3).toFixed(1)}" text-anchor="end">water below ${thrPct} %</text>`;
+  if (pts.length > 1) s += `<path class="moist" d="${pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.ts).toFixed(1)} ${y(p.pct).toFixed(1)}`).join(' ')}"/>`;
+  ph.doses.filter(d => d.ts >= t0).forEach(d => { const X = x(d.ts); s += `<polygon class="dose" points="${(X - 5).toFixed(1)},${top + H + 2} ${(X + 5).toFixed(1)},${top + H + 2} ${X.toFixed(1)},${top + H - 8}"><title>${d.ml} mL · ${esc(when(d.ts))}</title></polygon>`; });
+  s += xAxisLabels(t0, days, top + H + 14);
+  return `<div class="chead"><span class="l">Moisture · % · ${days} d</span><span class="l">▲ = a dose (${ph.doses.length})</span></div>
+  <svg viewBox="0 0 ${CW} ${top + H + axis}" role="img" aria-label="Moisture over ${days} days with doses">${s}</svg>`;
+}
+function chartBox(days, fn) {
+  histEnsure(days);
+  const h = HIST.data && HIST.data.days === days ? HIST.data : null;
+  if (!h) return HIST.err ? `<div class="faint" style="font-size:14px">History could not be loaded: ${esc(HIST.err)}</div>` : '<div class="faint" style="font-size:14px">loading history…</div>';
+  return fn(h) + (h.note ? `<div class="faint" style="font-size:13px;margin-top:4px">${esc(h.note)}</div>` : '');
 }
 
+// ---------------------------------------------------------------- weather tile (Glance) — display only
+function weatherTile() {
+  const hh = state.household, loc = Weather.loc(hh), t = state.telemetry;
+  let fc;
+  if (backend.isMock) fc = Weather.fake(t);
+  else { fc = Weather.get(hh); Weather.ensure(hh, render); }
+  const err = backend.isMock ? null : Weather.error(hh);
+  const ctl = t.rainPct !== undefined && t.rainPct !== null && t.wxAgeS !== undefined ? `<br>controller has ${t.rainPct} % · ${ago(Date.now() - t.wxAgeS * 1000)}` : '';
+  if (!fc) return `<div class="w"><div class="l">Weather · ${esc(loc.label || 'set in Settings')}</div><div class="v">—</div><div class="s">${err ? `<b class="danger-text">no forecast</b> — ${esc(err)}` : 'loading the forecast…'}</div></div>`;
+  return `<div class="w"><div class="l">Weather · ${esc(loc.label || `${loc.lat}, ${loc.lon}`)}</div>
+    <div class="v">${fc.today.tMax === null ? '—' : fc.today.tMax + '<small>°C today</small>'}</div>
+    <div class="s">rain <b>${fc.h12.pct} %</b> (${fc.h12.mm} mm) next 12 h<br>${fc.h24.pct} % (${fc.h24.mm} mm) next 24 h<br>tomorrow ${fc.tomorrow.tMax === null ? '—' : fc.tomorrow.tMax + ' °C'} · ${fc.tomorrow.pct === null ? '—' : fc.tomorrow.pct + ' %'}${fc.fake ? ' · demo' : ''}${ctl}</div></div>`;
+}
+
+// ---------------------------------------------------------------- screens
 // Glance = exactly the widget stack Theo chose in the lab (app/design/cockpit-spec.json), top to bottom:
 // Charts · Alerts strip · Tank | Temperature · Weather | Pump & auto · Next round | Last round · Pot grid · Quick actions.
 function renderGlance() {
@@ -124,15 +192,15 @@ function renderGlance() {
     </button>`;
   }).join('');
   return `${banner}<div class="wgrid ${conn !== 'online' ? 'stale' : ''}">
-    <div class="w x2 chart">${tankChart()}</div>
+    <div class="w x2 chart">${chartBox(14, tankChart)}</div>
     <div class="w x2"><div class="l" style="margin-bottom:${active.length ? 8 : 0}px">${active.length ? `Needs a human · ${active.length}` : 'Alerts'}</div>
       <div class="astrip">${active.length ? active.map(a => `<div class="a ${a.severity}"><div class="t">${SYM[a.severity] || ''} ${esc(a.message)}</div><div class="m">${ago(a.ts)}${a.ch != null ? ` · <a href="#" data-action="pot" data-arg="${a.ch}">open ${esc(potName(a.ch))}</a>` : ''} · <a href="#" data-action="ack" data-arg="${a.id}">acknowledge</a></div></div>`).join('') : '<div class="s">Nothing needs a human right now.</div>'}</div></div>
     <div class="w"><div class="l">Tank</div><div class="v">${litres(t.tankLeft)}<small>L</small></div><div class="s">${d == null ? 'no history yet' : `<b>${d < 1 ? '< 1 day' : Math.floor(d) + (d >= 2 ? ' days' : ' day')}</b> left`} · ${Math.round(100 * t.tankLeft / c.tankFull)} % full</div></div>
     <div class="w"><div class="l">Temperature</div><div class="v">${t.tempEn && t.tempOK ? t.tempC.toFixed(1) + '<small>°C</small>' : '—'}</div><div class="s">${!t.tempEn ? 'probe switched off' : !t.tempOK ? '<b class="danger-text">no reading from the probe</b> — check red → 5 V, yellow → GPIO8, 4.7 kΩ' : (t.tempC < c.minTempC ? '<b class="danger-text">frost — watering suspended</b>' : 'no frost · watering allowed')}</div></div>
-    <div class="w weather"><div class="l">Weather</div><div class="v">—</div><div class="s">forecast and rain-skip land here (phase 2)</div></div>
-    <div class="w"><div class="l">Pump · Auto</div><div class="v mid">${t.pumpRunning ? chip('open', 'pump running') : 'Idle'}</div><div class="s">${t.rulesHash ? 'Rules schedule' : t.autoMin ? `Auto every ${autoText(t.autoMin)}` : 'Auto off'} · ${t.pumpEn ? 'ready' : '<b class="danger-text">pump switched OFF</b>'}</div></div>
+    ${weatherTile()}
+    <div class="w"><div class="l">Pump · Auto</div><div class="v mid">${t.pumpRunning ? chip('open', 'pump running') : 'Idle'}</div><div class="s">${t.rulesHash ? 'Watering plan' : t.autoMin ? `Auto every ${autoText(t.autoMin)}` : 'Auto off'} · ${t.pumpEn ? 'ready' : '<b class="danger-text">pump switched OFF</b>'}</div></div>
     <div class="w"><div class="l">Next round</div><div class="v mid">${nr.v}</div><div class="s">${nr.s}</div></div>
-    <div class="w x2"><div class="l">Last round${lr ? ` · ${ago(lr.ts)}` : ''}</div><div class="s" style="font-size:18px;margin-top:2px">${lr ? `<b>${lr.watered} watered</b> · ${lr.skipped} skipped${lr.skippedBy ? ` (rule: ${esc(lr.skippedBy)})` : ''} · ${lr.refused ? `<b class="danger-text">${lr.refused} refused</b>` : 'none refused'}` : 'no round yet'}</div></div>
+    <div class="w x2"><div class="l">Last round${lr ? ` · ${ago(lr.ts)}` : ''}</div><div class="s" style="font-size:18px;margin-top:2px">${lr ? `<b>${lr.watered} watered</b> · ${lr.skipped} skipped${lr.skippedBy ? ` (the plan skipped it: ${esc(lr.skippedBy)})` : ''} · ${lr.refused ? `<b class="danger-text">${lr.refused} refused</b>` : 'none refused'}` : 'no round yet'}</div></div>
     <div class="x2"><div class="row" style="margin:4px 0 8px"><span class="l" style="font-weight:700">Pots · ${nDry} dry${nBad ? ` · ${nBad} problem${nBad > 1 ? 's' : ''}` : ''}</span><span class="faint" style="font-size:15px">tap a pot for details</span></div>
       <div class="pots">${pots}</div></div>
     <div class="w x2"><div class="acts"><button class="btn primary" data-action="cmd" data-cmd="run" data-label="Run a round">Run round</button><button class="btn" data-action="confirm-refill">Refilled</button><button class="btn danger-outline" data-action="confirm-stop">Stop</button></div></div>
@@ -149,15 +217,6 @@ function renderPots() {
   return `<div class="card"><div class="list">${rows}</div></div>`;
 }
 
-function sparkline(points, key, floor) {
-  if (points.length < 2) return '';
-  const w = 300, h = 56, xs = points.map(p => p.ts), ys = points.map(p => p[key]);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = 0, y1 = Math.max(...ys, 1);
-  const X = (x) => ((x - x0) / (x1 - x0 || 1)) * w, Y = (y) => h - 4 - ((y - y0) / (y1 - y0 || 1)) * (h - 8);
-  const d = points.map((p, i) => `${i ? 'L' : 'M'}${X(p.ts).toFixed(1)},${Y(p[key]).toFixed(1)}`).join('');
-  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><path d="${d}"/>${floor != null ? `<line x1="0" x2="${w}" y1="${Y(floor)}" y2="${Y(floor)}"/>` : ''}</svg>`;
-}
-
 function renderTank() {
   const t = state.telemetry, c = state.config, pct = Math.round(100 * t.tankLeft / c.tankFull), d = daysLeft(), u = dailyUse();
   const refills = state.events.filter(e => e.kind === 'refill').slice(0, 10);
@@ -171,16 +230,16 @@ function renderTank() {
     <div class="bar ${pct < 20 ? 'dry' : ''}" style="height:14px;margin:12px 0 6px"><i style="width:${pct}%"></i><b style="left:${100 * c.tankReserve / c.tankFull}%"></b></div>
     <div class="row faint" style="font-size:14px"><span>reserve ${c.tankReserve} mL — nothing waters below it</span><span>${todayML} mL dosed today</span></div>
   </div>
-  <div class="card">
-    <h2>Last 3 days</h2>
-    ${sparkline(state.readings.slice(-400), 'tankLeft', c.tankReserve)}
-    <div class="faint" style="font-size:14px">Software counter: every dose is subtracted; a leak is invisible to it — eyeball the tank now and then. Full history charts come in phase 2.</div>
+  <div class="card section chart">
+    <div class="row"><h2>History</h2><div class="btn-row" role="group" aria-label="Range">${[14, 30].map(n => `<button class="btn sm ${HIST.days === n ? 'primary' : ''}" aria-pressed="${HIST.days === n}" data-action="hist-days" data-arg="${n}">${n} days</button>`).join('')}</div></div>
+    ${chartBox(HIST.days, h => tankChart(h) + '<div style="height:10px"></div>' + tempChart(h))}
+    <div class="faint" style="font-size:14px">Software counter: every dose is subtracted; a leak is invisible to it — eyeball the tank now and then.</div>
   </div>
   <div class="card section">
     <button class="btn primary block" data-action="confirm-refill">Refilled — mark tank full</button>
     <div class="inline"><div class="field"><label>Or set the level by hand (mL)</label><input type="number" id="tank-ml" min="0" max="${c.tankFull}" step="250" placeholder="${t.tankLeft}"></div><button class="btn" data-action="tank-set">Set</button></div>
   </div>
-  <div class="card"><h2>Refills</h2><div class="list">${refills.length ? refills.map(e => `<div class="row"><span>${when(e.ts)}</span><span class="muted">${litres(e.tankLeft)} L</span></div>`).join('') : '<div class="empty">No refills recorded</div>'}</div></div>`;
+  <div class="card"><h2>Refills</h2><div class="list">${refills.length ? refills.map(e => `<div class="row"><span>${whenDate(e.ts)}</span><span class="muted">${litres(e.tankLeft)} L</span></div>`).join('') : '<div class="empty">No refills recorded</div>'}</div></div>`;
 }
 
 function renderAlerts() {
@@ -194,11 +253,11 @@ function renderAlerts() {
   <div class="card"><div class="row"><h2>Active</h2>${active.some(a => !a.ackedAt) ? '<button class="btn sm ghost" data-action="ack" data-arg="all">Acknowledge all</button>' : ''}</div>
     <div class="list">${active.length ? active.map(item).join('') : '<div class="empty">Nothing needs a human right now</div>'}</div></div>
   <div class="card"><h2>Recent</h2><div class="list">${past.length ? past.map(item).join('') : '<div class="empty">No past alerts</div>'}</div></div>
-  <div class="faint" style="font-size:14px;margin-top:12px">Rules: tank &lt; 20 % · tank at reserve · pot refused (implausible / uncalibrated / budget) · frost &lt; 3 °C · controller silent &gt; ${3 * state.device.intervalS / 60} min · 90 s pump cap · emergency stop. Push goes to ntfy topic <span class="mono">${esc(state.household.ntfyTopic)}</span>.</div>`;
+  <div class="faint" style="font-size:14px;margin-top:12px">You are alerted when: tank &lt; 20 % · tank at reserve · a pot is refused (implausible / uncalibrated / budget) · frost &lt; 3 °C · controller silent &gt; ${3 * state.device.intervalS / 60} min · a dose hits the 90 s pump cap · emergency stop. Push goes to ntfy topic <span class="mono">${esc(state.household.ntfyTopic)}</span>.</div>`;
 }
 
 function renderControl() {
-  const t = state.telemetry, cmds = state.commands.slice(0, 8);
+  const t = state.telemetry, cmds = state.commands.filter(c => c.cmd !== 'weather').slice(0, 8);   // the hourly weather push is bookkeeping, not something Theo sent
   const st = (c) => c.status === 'acked' ? 'done' : c.status === 'failed' ? `refused · ${reasonText(c.result && c.result.reason)}` : c.status;
   return `
   <div class="card">
@@ -206,23 +265,85 @@ function renderControl() {
       <button class="btn" data-action="cmd" data-cmd="pstop" data-label="Pump stop" ${t.pumpRunning ? '' : 'disabled'}>Stop pump</button></div>
   </div>
   <div class="card section">
-    <div class="row"><div class="stack"><strong>Auto mode</strong><span class="faint" style="font-size:14px">rounds run from the controller's own timer, cloud or no cloud</span></div>
+    <div class="row"><div class="stack"><strong>Auto mode</strong><span class="faint" style="font-size:14px">rounds run from the controller's own timer, cloud or no cloud${t.rulesHash ? ' — the watering plan’s times take over while it is applied' : ''}</span></div>
       <button class="switch" role="switch" aria-checked="${t.autoMin > 0}" data-action="auto-toggle"></button></div>
     <div class="inline"><div class="field"><label>Interval</label><select id="auto-min">${[60, 120, 180, 360, 720, 1440].map(m => `<option value="${m}" ${t.autoMin === m || (!t.autoMin && m === 360) ? 'selected' : ''}>${m >= 60 ? m / 60 + ' h' : m + ' min'}</option>`).join('')}</select></div><button class="btn" data-action="auto-set">Apply</button></div>
   </div>
   <div class="card section">
     <button class="btn primary block" data-action="cmd" data-cmd="run" data-label="Run a round">Run a round now</button>
-    <div class="btn-row"><button class="btn" data-action="cmd" data-cmd="refresh" data-label="Refresh readings">Refresh readings</button><button class="btn" data-action="cmd" data-cmd="hwcheck" data-label="Hardware check">Hardware check</button></div>
-    ${hwText ? `<pre class="mono" style="white-space:pre-wrap;margin:0;background:var(--surface-2);padding:10px;border-radius:8px">${esc(hwText)}</pre>` : ''}
+    <div class="btn-row"><button class="btn" data-action="cmd" data-cmd="refresh" data-label="Refresh readings">Refresh readings</button><button class="btn" data-action="go" data-arg="bench">Test the hardware</button></div>
     <button class="btn danger block" data-action="confirm-stop">Emergency stop</button>
     <div class="faint" style="font-size:14px">A round senses all pots first (pump off, valves limp), then waters dry pots one at a time through every interlock. Emergency stop cuts the pump and all servo PWM; closed valves stay closed on the cam.</div>
   </div>
   ${rulesCard()}
-  <div class="card"><h2>Commands</h2><div class="list">${cmds.length ? cmds.map(c => `<div class="cmd"><span>${esc(c.cmd)}${c.args && Object.keys(c.args).length ? ` <span class="faint mono">${esc(JSON.stringify(c.args))}</span>` : ''}</span><span class="st ${c.status}">${st(c)} · ${ago(c.ackedAt || c.createdAt)}</span></div>`).join('') : '<div class="empty">No commands yet</div>'}</div></div>`;
+  <div class="card"><h2>Commands</h2><div class="list">${cmds.length ? cmds.map(c => `<div class="cmd"><span>${esc(c.cmd)}${c.args && Object.keys(c.args).length && c.cmd !== 'rules' ? ` <span class="faint mono">${esc(JSON.stringify(c.args))}</span>` : ''}</span><span class="st ${c.status}">${st(c)} · ${ago(c.ackedAt || c.createdAt)}</span></div>`).join('') : '<div class="empty">No commands yet</div>'}</div></div>`;
+}
+
+// ---- Test bench: every component on its own, with live readings (Theo 2026-09-03: "test all components and get live readings, also the pump").
+function benchLiveText() {
+  const d = state.device, t = state.telemetry;
+  if (backend.isMock) return 'live — the demo reads every 5 s';
+  if (backend.lan) return 'live — read from the controller every 2 s';
+  if (TB.liveUntil > Date.now()) return `live for ${Math.ceil((TB.liveUntil - Date.now()) / 60e3)} more min — one reading a minute (the controller’s fastest)`;
+  return `normal — one reading every ${Math.round(d.intervalS / 60)} min`;
+}
+function renderBench() {
+  const t = state.telemetry, d = state.device, c = state.config;
+  const sensors = state.pots.filter(p => p.i < t.nSensors).map(p => { const st = potState(p); return `<div class="tb-tile ${st.cls}"><span class="n">${esc(potName(p.i))}</span><span class="v">${p.pct >= 0 ? p.pct + ' %' : SYM[st.cls]}</span><span class="r">${p.senEn ? `raw ${p.raw}` : 'off'}</span></div>`; }).join('');
+  const valves = state.pots.filter(p => p.i < t.nServos).map(p => `<div class="tb-valve"><div class="stack"><strong>${esc(potName(p.i))}</strong><span class="faint" style="font-size:14px">${p.valEn ? valveText(p) : 'switched off'}</span></div>
+    <div class="btn-row">${[['o', 'Open'], ['c', 'Close'], ['x', 'Limp']].map(([s, l]) => `<button class="btn sm" data-action="cmd" data-cmd="v" data-ch="${p.i}" data-st="${s}" data-label="Valve ${p.i + 1} ${l.toLowerCase()}">${l}</button>`).join('')}<button class="btn sm" data-action="cmd" data-cmd="vtest" data-ch="${p.i}" data-label="Valve test ${p.i + 1}">Test</button></div></div>`).join('');
+  const plaus = state.pots.filter(p => p.i < t.nSensors && p.senEn), nPlaus = plaus.filter(p => p.sState === S_STATE.OK).length;
+  const flowNote = TB.lastSec ? `<div class="inline"><div class="field"><label>Pump ran ${TB.lastSec} s — measured how much?</label><input type="number" id="tb-ml" min="1" max="5000" placeholder="mL in the jug"></div><button class="btn" data-action="tb-flow">Set as flow</button></div>
+    <div class="faint" style="font-size:14px">mL ÷ seconds = the flow constant the doses are timed with (now ${t.mlPerSec} mL/s; bench free-flow was 30).</div>` : '';
+  return `
+  <div class="ru-head"><button class="btn sm" data-action="go" data-arg="control" aria-label="Back to Control">‹ Control</button><div class="stack"><h3>Test bench</h3><span class="faint" style="font-size:14px">every part on its own · live readings</span></div></div>
+  <div class="section">
+    <div class="card section">
+      <div class="row"><h2>Live readings</h2><span class="faint" style="font-size:14px">updated ${ago(t.ts || d.lastSeen)}</span></div>
+      <div class="tb-tiles">${sensors || '<div class="empty">No sensors fitted</div>'}</div>
+      <div class="row"><span class="faint" style="font-size:14px">${esc(benchLiveText())}</span>${isCloud() ? `<button class="btn sm" data-action="tb-live" ${TB.liveUntil > Date.now() ? 'disabled' : ''}>Live for 5 minutes</button>` : ''}</div>
+      <div class="row"><div class="stack"><strong>Temperature probe</strong><span class="faint" style="font-size:14px">${!t.tempEn ? 'switched off' : t.tempOK ? `${t.tempC.toFixed(1)} °C` : '<span class="danger-text">no reading — check red → 5 V, yellow → GPIO8, 4.7 kΩ</span>'}</span></div><button class="btn sm" data-action="cmd" data-cmd="temp" data-label="Read temperature">Read now</button></div>
+      <div class="row faint" style="font-size:14px;flex-wrap:wrap"><span>WiFi ${d.rssi} dBm</span><span>free memory ${Number.isFinite(t.heap) ? Math.round(t.heap / 1024) + ' kB' : '—'}</span><span>up ${upStr(d.up)}</span><span class="mono">${esc(d.fw)}</span></div>
+    </div>
+    <div class="card section">
+      <h2>Valves</h2>
+      <div class="list">${valves || '<div class="empty">No servos fitted</div>'}</div>
+      <button class="btn block" data-action="cmd" data-cmd="vall" data-st="c" data-label="Close all valves">Close all, then limp</button>
+      <div class="faint" style="font-size:14px">An open valve holds ~0.25 A — open ONE at a time and close it again. Test = open 1 s, close, limp. Limp cuts the signal; the cam keeps a closed valve shut.</div>
+    </div>
+    <div class="card section">
+      <h2>Pump</h2>
+      <div class="row"><div class="stack"><span>Pump enabled</span><span class="faint" style="font-size:14px">${t.pumpEn ? 'on — the pump may run' : 'off — every dose and test is a dry run'}</span></div><button class="switch" role="switch" aria-checked="${t.pumpEn}" data-action="en" data-what="pump" data-on="${!t.pumpEn}"></button></div>
+      <div class="inline"><div class="field"><label>Run for</label><select id="tb-sec">${[1, 2, 3, 5, 10, 15, 20, 30].map(s => `<option value="${s}" ${s === TB.lastSec ? 'selected' : ''}>${s} s</option>`).join('')}</select></div><button class="btn primary tb-big" style="flex:2" data-action="tb-pump">Run pump</button></div>
+      <button class="btn danger block tb-big" data-action="cmd" data-cmd="pstop" data-label="Pump stop">STOP</button>
+      ${t.pumpRunning ? `<div>${chip('open', 'pump running')}</div>` : ''}
+      ${flowNote}
+    </div>
+    <div class="card section">
+      <div class="row"><h2>Hardware check</h2><button class="btn sm" data-action="cmd" data-cmd="hwcheck" data-label="Hardware check">Run check</button></div>
+      <div class="list">
+        <div class="row"><span>PCA9685 (valve driver)</span><span>${d.havePCA ? '● found' : '<span class="danger-text">✕ MISSING</span>'}</span></div>
+        <div class="row"><span>Temperature probe</span><span>${!t.tempEn ? '— off' : t.tempOK ? '● answers' : '<span class="danger-text">✕ no answer</span>'}</span></div>
+        <div class="row"><span>Sensors plausible</span><span>${nPlaus} of ${plaus.length}${plaus.length - nPlaus ? ` — <span class="danger-text">${plaus.filter(p => p.sState !== S_STATE.OK).map(p => p.i + 1).join(', ')}</span>` : ''}</span></div>
+        <div class="row"><span>Pump gate</span><span>${t.pumpRunning ? '<span class="tag open">● ON</span>' : '— low (off)'}</span></div>
+      </div>
+      ${hwText ? `<pre class="mono" style="white-space:pre-wrap;margin:0;background:var(--surface-2);padding:10px;border-radius:8px">${esc(hwText)}</pre>` : `<div class="faint" style="font-size:14px">${backend.lan ? 'On the home WiFi the full checklist prints on the controller’s serial console; the rows above come from its live state.' : 'The rows above come from the last telemetry; "Run check" asks the controller for its own checklist.'}</div>`}
+    </div>
+    <div class="card section">
+      <div class="row"><div class="stack"><span>Status LED</span><span class="faint" style="font-size:14px">not fitted on Rev A4 — the firmware still has the switch</span></div><button class="switch" role="switch" aria-checked="${t.ledEn}" data-action="en" data-what="led" data-on="${!t.ledEn}"></button></div>
+    </div>
+    <div class="faint" style="font-size:14px">Every button here goes through the controller’s own interlocks: 90 s pump cap, one valve at a time, pump off = dry run, emergency stop always wins. Frost (${c.minTempC} °C) and the tank reserve only stop watering, not these tests.</div>
+  </div>`;
+}
+function benchLiveStop() {
+  if (!isCloud() || !TB.liveUntil) return;
+  TB.liveUntil = 0;
+  const back = TB.prevIntervalS || 300; TB.prevIntervalS = null;
+  cmd('interval', { s: back }, `Readings back to every ${Math.round(back / 60)} min`);
 }
 
 function renderSettings() {
-  const d = state.device, t = state.telemetry, c = state.config;
+  const d = state.device, t = state.telemetry, c = state.config, hh = state.household, loc = Weather.loc(hh);
   const rows = state.pots.map(p => `<tr>
     <td>${esc(potName(p.i))}</td>
     <td><input type="number" min="1" max="99" value="${p.thrPct}" data-change="thr" data-arg="${p.i}"></td>
@@ -253,7 +374,7 @@ function renderSettings() {
   <div class="card section">
     <h2>Fitted hardware &amp; constants</h2>
     <div class="inline"><div class="field"><label>Sensors fitted</label><input type="number" id="fit-sen" min="0" max="16" value="${t.nSensors}"></div><div class="field"><label>Servos fitted</label><input type="number" id="fit-srv" min="0" max="16" value="${t.nServos}"></div><button class="btn" data-action="fit-set">Apply</button></div>
-    <div class="inline"><div class="field"><label>Flow (mL/s)</label><input type="number" id="flow" step="0.1" min="0.1" value="${t.mlPerSec}"><span class="hint">30 = free-flow bench value; re-measure on a real branch</span></div><button class="btn" data-action="flow-set">Apply</button></div>
+    <div class="inline"><div class="field"><label>Flow (mL/s)</label><input type="number" id="flow" step="0.1" min="0.1" value="${t.mlPerSec}"><span class="hint">30 = free-flow bench value; measure it on the Test bench (Control)</span></div><button class="btn" data-action="flow-set">Apply</button></div>
     <div class="inline"><div class="field"><label>Servo open (µs)</label><input type="number" id="open-us" min="500" max="2500" value="${c.openUs}"></div><div class="field"><label>closed (µs)</label><input type="number" id="closed-us" min="500" max="2500" value="${c.closedUs}"></div><button class="btn" data-action="vlim-set">Apply</button></div>
     <div class="row"><div class="stack"><span>Temperature probe</span><span class="faint" style="font-size:14px">frost interlock below ${c.minTempC} °C</span></div><button class="switch" role="switch" aria-checked="${t.tempEn}" data-action="en" data-what="temp" data-on="${!t.tempEn}"></button></div>
     <div class="row"><div class="stack"><span>Pump</span><span class="faint" style="font-size:14px">off = the whole system is dry-run</span></div><button class="switch" role="switch" aria-checked="${t.pumpEn}" data-action="en" data-what="pump" data-on="${!t.pumpEn}"></button></div>
@@ -265,8 +386,14 @@ function renderSettings() {
     <button class="btn block" data-action="cmd" data-cmd="save" data-label="Save to flash">Save all settings to the controller's flash</button>
   </div>
   <div class="card section">
+    <h2>Weather location</h2>
+    <div class="inline"><div class="field"><label>Latitude</label><input type="number" id="wx-lat" step="0.01" min="-90" max="90" value="${loc.lat}"></div><div class="field"><label>Longitude</label><input type="number" id="wx-lon" step="0.01" min="-180" max="180" value="${loc.lon}"></div><button class="btn" data-action="wx-loc-set">Save</button></div>
+    <div class="btn-row"><button class="btn" data-action="wx-loc-geo">Use my location</button>${hh.weatherLoc ? '<button class="btn ghost" data-action="wx-loc-default">Back to the default</button>' : ''}</div>
+    <div class="faint" style="font-size:14px">${hh.weatherLoc ? `Using ${esc(hh.weatherLoc.label || 'your location')}.` : '<b>Default: Oldenburg, Germany</b> — set the balcony’s location once.'} The Weather tile and the forecast the cloud sends to the controller every hour both use it (Open-Meteo, free, no account).</div>
+  </div>
+  <div class="card section">
     <h2>Household</h2>
-    <div class="inline"><div class="field"><label>ntfy.sh topic for push alerts</label><input type="text" id="ntfy" value="${esc(state.household.ntfyTopic)}"><span class="hint">Install the ntfy app on every phone and subscribe to this topic.</span></div><button class="btn" data-action="ntfy-set">Save</button></div>
+    <div class="inline"><div class="field"><label>ntfy.sh topic for push alerts</label><input type="text" id="ntfy" value="${esc(hh.ntfyTopic)}"><span class="hint">Install the ntfy app on every phone and subscribe to this topic.</span></div><button class="btn" data-action="ntfy-set">Save</button></div>
     <div class="row"><span class="muted">Signed in as</span><span>${esc((backend.session() || {}).email || '—')}</span></div>
     <button class="btn block" data-action="logout">Sign out</button>
   </div>
@@ -283,8 +410,9 @@ function renderSheet() {
   if (!sheet) { el.classList.remove('open'); scrim.classList.remove('open'); el.innerHTML = ''; return; }
   el.classList.add('open'); scrim.classList.add('open');
   if (sheet.type === 'pot') {
-    if (!el.dataset.pot || +el.dataset.pot !== sheet.i) { el.dataset.pot = sheet.i; el.innerHTML = `<div class="grip"></div><div id="sheet-live"></div><div id="sheet-form"></div>`; $('#sheet-form', el).innerHTML = potForm(state.pots[sheet.i]); }
+    if (!el.dataset.pot || +el.dataset.pot !== sheet.i) { el.dataset.pot = sheet.i; el.innerHTML = `<div class="grip"></div><div id="sheet-live"></div><div id="sheet-hist" class="section chart"></div><div id="sheet-form"></div>`; $('#sheet-form', el).innerHTML = potForm(state.pots[sheet.i]); }
     $('#sheet-live', el).innerHTML = potLive(state.pots[sheet.i]);
+    $('#sheet-hist', el).innerHTML = potHist(state.pots[sheet.i]);
   } else if (sheet.type === 'confirm') {
     delete el.dataset.pot;
     el.innerHTML = `<div class="grip"></div><h3>${esc(sheet.title)}</h3><p class="muted">${esc(sheet.body)}</p>
@@ -301,10 +429,18 @@ function potLive(p) {
   ${last ? `<div class="faint" style="font-size:14px;margin-top:6px">last: ${last.kind === 'dose' ? `${last.ml} mL` : `refused — ${reasonText(last.reason)}`} · ${ago(last.ts)}</div>` : ''}
   <div class="btn-row" style="margin-top:12px"><button class="btn primary" data-action="cmd" data-cmd="water" data-ch="${p.i}" data-label="Water ${esc(potName(p.i))}">Water now (${p.doseML} mL)</button><button class="btn" data-action="cmd" data-cmd="vtest" data-ch="${p.i}" data-label="Valve test ${p.i + 1}">Valve test</button></div>`;
 }
+function potHist(p) {
+  potHistEnsure(p.i);
+  const c = HIST.pot[p.i] || {};
+  const body = c.data ? (c.data.moisture.length > 1 ? moistureChart(c.data, p.thrPct) : `<div class="faint" style="font-size:14px">${c.data.doses.length ? `${c.data.doses.length} dose${c.data.doses.length > 1 ? 's' : ''} in 14 days, ` : ''}no moisture history yet${c.data.note ? ' — ' + esc(c.data.note) : ''}</div>`)
+    : c.err ? `<div class="faint" style="font-size:14px">History could not be loaded: ${esc(c.err)}</div>` : '<div class="faint" style="font-size:14px">loading history…</div>';
+  return `<h2>History</h2>${body}`;
+}
 function potForm(p) {
   return `<div class="section">
     <div class="inline"><div class="field"><label>Water below (%)</label><input type="number" min="1" max="99" value="${p.thrPct}" data-change="thr" data-arg="${p.i}"></div>
       <div class="field"><label>Dose (mL)</label><select data-change="dose" data-arg="${p.i}"><option value="250" ${p.doseML === 250 ? 'selected' : ''}>250 · small pot</option><option value="900" ${p.doseML === 900 ? 'selected' : ''}>900 · large pot</option>${[250, 900].includes(p.doseML) ? '' : `<option value="${p.doseML}" selected>${p.doseML}</option>`}</select></div></div>
+    <div class="faint" style="font-size:14px">A value set here is this pot's own; the watering plan's defaults leave it alone.</div>
     <div class="row"><span>Sensor</span><button class="switch" role="switch" aria-checked="${p.senEn}" data-action="en" data-what="s${p.i + 1}" data-on="${!p.senEn}"></button></div>
     <div class="row"><span>Valve</span><button class="switch" role="switch" aria-checked="${p.valEn}" data-action="en" data-what="v${p.i + 1}" data-on="${!p.valEn}"></button></div>
     <div class="field"><label>Name</label><input type="text" value="${esc(state.household.potNames[p.i] || '')}" placeholder="e.g. Basil" data-change="name" data-arg="${p.i}"></div>
@@ -326,15 +462,16 @@ function render() {
   const c = $('#conn'); c.className = `conn ${conn}`; c.querySelector('span:last-child').textContent = conn === 'online' ? `online · ${ago(state.device.lastSeen)}` : conn === 'stale' ? `stale · ${ago(state.device.lastSeen)}` : `offline · ${ago(state.device.lastSeen)}`;
   const nAlerts = state.alerts.filter(a => a.active && !a.ackedAt).length;
   const badge = $('#badge-alerts'); badge.hidden = !nAlerts; badge.textContent = nAlerts;
-  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.screen === (screen === 'rules' ? 'control' : screen)));
-  const fn = { glance: renderGlance, pots: renderPots, tank: renderTank, alerts: renderAlerts, control: renderControl, settings: renderSettings, rules: renderRules }[screen];
+  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.screen === (screen === 'rules' || screen === 'bench' ? 'control' : screen)));
+  const fn = { glance: renderGlance, pots: renderPots, tank: renderTank, alerts: renderAlerts, control: renderControl, settings: renderSettings, rules: renderRules, bench: renderBench }[screen];
   const host = $(`#screen-${screen}`);
   const focused = document.activeElement && host.contains(document.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
   if (!focused) host.innerHTML = fn();
   SCREENS.forEach(s => $(`#screen-${s}`).classList.toggle('active', s === screen));
   renderSheet();
+  if (TB.liveUntil && Date.now() > TB.liveUntil) benchLiveStop();
 }
-function go(s) { screen = s; sheet = null; window.scrollTo(0, 0); render(); try { localStorage.setItem('screen', s); } catch (e) { /* private mode */ } }
+function go(s) { if (screen === 'bench' && s !== 'bench') benchLiveStop(); screen = s; sheet = null; window.scrollTo(0, 0); render(); try { localStorage.setItem('screen', s); } catch (e) { /* private mode */ } }
 
 // ---------------------------------------------------------------- actions
 function onClick(e) {
@@ -367,6 +504,18 @@ function onClick(e) {
     case 'vlim-set': cmd('vlim', { openUs: +$('#open-us').value, closedUs: +$('#closed-us').value }, 'Servo pulses'); break;
     case 'cal-type': cmd('cal', { ch: +arg, air: +$('#cal-air').value, water: +$('#cal-water').value }, `Calibration ${+arg + 1}`); break;
     case 'ntfy-set': backend.setHousehold({ ntfyTopic: $('#ntfy').value.trim() }); toast('Saved'); break;
+    case 'wx-loc-set': { const lat = +$('#wx-lat').value, lon = +$('#wx-lon').value; if (Math.abs(lat) > 90 || Math.abs(lon) > 180 || !lat) { toast('Latitude −90…90, longitude −180…180'); break; } backend.setHousehold({ weatherLoc: { lat: +lat.toFixed(3), lon: +lon.toFixed(3), label: `${lat.toFixed(2)}, ${lon.toFixed(2)}` } }).then(() => toast('Location saved')); break; }
+    case 'wx-loc-geo':
+      if (!navigator.geolocation) { toast('This browser cannot tell its location'); break; }
+      toast('Asking the phone for its location…');
+      navigator.geolocation.getCurrentPosition(pos => backend.setHousehold({ weatherLoc: { lat: +pos.coords.latitude.toFixed(3), lon: +pos.coords.longitude.toFixed(3), label: 'my location' } }).then(() => toast('Location saved')),
+        err => toast(`No location: ${err.message}`, 4000), { timeout: 15000, maximumAge: 600e3 });
+      break;
+    case 'wx-loc-default': backend.setHousehold({ weatherLoc: null }).then(() => toast('Back to Oldenburg (default)')); break;
+    case 'hist-days': HIST.days = +arg; render(); break;
+    case 'tb-pump': { const sec = +$('#tb-sec').value; TB.lastSec = sec; cmd('p', { sec }, `Pump ${sec} s`); break; }
+    case 'tb-flow': { const ml = +$('#tb-ml').value; if (!(ml > 0) || !TB.lastSec) { toast('Type the measured millilitres first'); break; } const f = +(ml / TB.lastSec).toFixed(1); cmd('flow', { mlPerSec: f }, `Flow ${f} mL/s`); break; }
+    case 'tb-live': { if (!isCloud()) break; TB.prevIntervalS = state.device.intervalS; TB.liveUntil = Date.now() + 5 * 60e3; cmd('interval', { s: 60 }, 'Live readings for 5 minutes'); render(); break; }
     case 'theme': themeApply(arg); render(); break;
     case 'logout': backend.logout().then(() => { if (backend.isMock) toast('Signed out (mock: nothing happens)'); else location.reload(); }); break;
     case 'mock-offline': backend.mock.setOffline(!backend.mock.isOffline()); break;
@@ -411,12 +560,17 @@ async function main() {
   if (!backend.session()) { await showLogin(); await backend.init(); }
   state = backend.getState();
   try { const s = localStorage.getItem('screen'); if (SCREENS.includes(s)) screen = s; } catch (e) { /* ignore */ }
-  const q = new URLSearchParams(location.search).get('screen'); if (SCREENS.includes(q)) screen = q;
-  backend.subscribe(s => { state = s; render(); });
+  const q = new URLSearchParams(location.search), qs = q.get('screen'); if (SCREENS.includes(qs)) screen = qs;
+  const qp = q.get('pot'); if (qp !== null && state.pots[+qp]) sheet = { type: 'pot', i: +qp };
+  backend.subscribe(s => {
+    const top = s.events[0] && s.events[0].id; if (top !== HIST.topEvent) { HIST.topEvent = top; histInvalidate(); }   // a new event = the history changed
+    state = s; render();
+  });
   document.addEventListener('click', onClick);
   document.addEventListener('change', onChange);
   document.querySelectorAll('.nav button').forEach(b => b.addEventListener('click', () => go(b.dataset.screen)));
   $('#scrim').addEventListener('click', () => { sheet = null; render(); });
+  window.addEventListener('pagehide', benchLiveStop);
   setInterval(render, 15000);            // relative times + freshness
   render();
 }

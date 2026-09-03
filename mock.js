@@ -49,15 +49,15 @@ function createMockBackend(config) {
     device: { id: config.deviceId, name: 'Balcony', fw: '08.0.1-mock', ip: '192.168.1.42', rssi: -63, up: ctl.up,
       lastSeen: now - 40e3, intervalS: 300, havePCA: true },
     telemetry: {}, config: {}, pots: [],
-    household: { potNames: { 0: 'Tomato L', 1: 'Tomato R', 2: 'Basil', 3: 'Chili', 4: 'Mint', 5: 'Rosemary', 6: 'Strawberry', 7: 'Lavender' }, ntfyTopic: 'balcony-' + uid() },
+    household: { potNames: { 0: 'Tomato L', 1: 'Tomato R', 2: 'Basil', 3: 'Chili', 4: 'Mint', 5: 'Rosemary', 6: 'Strawberry', 7: 'Lavender' }, ntfyTopic: 'balcony-' + uid(), weatherLoc: null },
     lastRound: null, alerts: [], commands: [], events: [], readings: [],
   };
 
-  // ---- seeded history: 14 days, a round every 12 h (last one 200 min ago), two refills ----
+  // ---- seeded history: 30 days, a round every 12 h (last one 200 min ago), four refills ----
   // The Glance chart is drawn from these events: the tank steps down at every round and jumps at a refill.
   const pushEvent = (e) => { state.events.unshift({ id: uid(), ts: Date.now(), ...e }); if (state.events.length > 400) state.events.length = 400; };
-  const ROUND_MS = 12 * 3600e3, N_ROUNDS = 28, LAST_ROUND_TS = now - 200 * 60e3;
-  const REFILL_BEFORE = new Set([12, 26]);                     // refill just before round k (k = 0 is the latest round)
+  const ROUND_MS = 12 * 3600e3, N_ROUNDS = 60, LAST_ROUND_TS = now - 200 * 60e3;
+  const REFILL_BEFORE = new Set([12, 26, 40, 54]);                     // refill just before round k (k = 0 is the latest round)
   const roundPots = (k) => (k > 12 && k % 2 === 0) ? [0, 1, 4, 7] : [1, 4, 7];   // an extra big pot on some older rounds → the level before the last refill is lower
   const doseOf = (k) => roundPots(k).reduce((sum, ch) => sum + pots[ch].doseML, 0);
   let level = TANK_FULL - 3 * 750;                                            // a few rounds already spent before the window
@@ -72,7 +72,7 @@ function createMockBackend(config) {
   ctl.tankLeft = level; ctl.totalML = TANK_FULL - level;      // = 15250 with 13 × 750 mL since the last refill
   state.events.sort((a, b) => b.ts - a.ts);
   state.lastRound = { ...state.events.find(e => e.kind === 'round') };
-  for (let h = 14 * 24; h >= 1; h--) {                         // hourly readings for the tank sparkline (level = last event before that hour)
+  for (let h = 30 * 24; h >= 1; h--) {                         // hourly readings (tank = last event before that hour; a day/night temperature curve)
     const t = now - h * 3600e3;
     const ev = state.events.find(e => e.ts <= t && (e.kind === 'round' || e.kind === 'refill'));
     state.readings.push({ ts: t, tankLeft: ev ? ev.tankLeft : level, tempC: 17 + 6 * Math.sin((t / 3600e3) * Math.PI / 12) });
@@ -305,6 +305,24 @@ function createMockBackend(config) {
     async login() { return { email: 'household@example.org' }; },
     async logout() {},
     session() { return { email: 'household@example.org' }; },
+    // history for the charts (backend.js: History shape). Readings/events are the seeded 30 days.
+    async history(days) { return historyFromLocal(state.readings, state.events, days, Date.now()); },
+    // one pot's moisture: simulated forward over the window at a realistic ~1 %/h (not the demo's fast live drift), +45 % at each dose, a little day/night wobble
+    async potHistory(ch, days) {
+      const p = pots[ch], now = Date.now(), from = Math.floor((now - days * 86400e3) / 3600e3) * 3600e3, ratePerH = 0.7 + 0.2 * (ch % 4);
+      const doses = state.events.filter(e => e.kind === 'dose' && e.ch === ch && e.ts >= from).map(e => ({ ts: e.ts, ml: e.ml })).sort((a, b) => a.ts - b.ts);
+      const moisture = [];
+      if (p.sState === 1 || (p.air > 0 && p.water > 0 && !p._unplugged)) {
+        let v = 60;
+        for (let t = from; t <= now; t += 3600e3) {
+          if (doses.some(d => d.ts > t - 3600e3 && d.ts <= t)) v = Math.min(95, v + 45);
+          v = clamp(v - ratePerH, 0, 95);
+          moisture.push({ ts: t, pct: Math.round(clamp(v + 2 * Math.sin((t / 3600e3) * Math.PI / 12), 0, 100)) });
+        }
+        moisture[moisture.length - 1].pct = Math.round(clamp(p._true, 0, 100));   // the last point is the live value
+      }
+      return { days, moisture, doses };
+    },
     // mock-only controls (Settings shows them when isMock)
     mock: {
       setOffline(v) { offline = !!v; emit(); },

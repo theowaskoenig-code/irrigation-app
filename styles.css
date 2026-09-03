@@ -141,8 +141,6 @@ main { flex: 1; padding: 16px 16px calc(var(--nav-h) + 24px); max-width: 720px; 
 .w .v.mid { font-size: 26px; }
 .w .s { font-size: 15px; color: var(--text-2); margin-top: 4px; }
 .w .s b { color: var(--text); }
-.w.weather { border-style: dashed; border-color: var(--text-3); color: var(--text-3); }
-.w.weather .l, .w.weather .v, .w.weather .s { color: var(--text-3); }
 .astrip { display: flex; flex-direction: column; gap: 10px; }
 .astrip .a { border-left: 6px solid var(--amber); padding-left: 10px; }
 .astrip .a.critical { border-left-color: var(--red); }
@@ -163,6 +161,9 @@ main { flex: 1; padding: 16px 16px calc(var(--nav-h) + 24px); max-width: 720px; 
 .chart .refill { fill: var(--wet); }
 .chart .now { fill: var(--accent); }
 .chart .floor { stroke: var(--red); stroke-dasharray: 4 3; stroke-width: 1.5; }
+.chart .temp { fill: none; stroke: var(--amber); stroke-width: 2.5; stroke-linejoin: round; }
+.chart .moist { fill: none; stroke: var(--wet); stroke-width: 3; stroke-linejoin: round; }
+.chart .dose { fill: var(--accent); }
 .chead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
 
 /* ---- pot tiles (large, names, 2 per row on the phone) ---- */

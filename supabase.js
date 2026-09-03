@@ -100,7 +100,8 @@ function createSupabaseBackend(config) {
       config: { openUs: num(cp.openUs, 2500), closedUs: num(cp.closedUs, 1300), tankFull: num(cp.tankFull, 25000), tankReserve: num(cp.tankReserve, 500),
         minTempC: num(cp.minTempC, 3), plausMargin: num(cp.plausMargin, 250), maxPumpMs: num(cp.maxPumpMs, 90000) },
       pots,
-      household: { potNames: hh.pot_names || {}, ntfyTopic: hh.ntfy_topic || '' },
+      household: { potNames: hh.pot_names || {}, ntfyTopic: hh.ntfy_topic || '',
+        weatherLoc: hh.weather && Number.isFinite(hh.weather.lat) && Number.isFinite(hh.weather.lon) ? { lat: hh.weather.lat, lon: hh.weather.lon, label: hh.weather.label || '' } : null },
       lastRound: lr ? { ts: lr.ts, watered: num(lr.watered, 0), skipped: num(lr.skipped, 0), refused: num(lr.refused, 0), tankLeft: num(lr.tankLeft, 0), tempC: num(lr.tempC, 0), trigger: lr.trigger || 'auto' } : null,
       alerts: (raw.alerts || []).map(mapAlert),
       commands: (raw.commands || []).map(mapCommand),
@@ -181,9 +182,46 @@ function createSupabaseBackend(config) {
       const row = {};
       if (patch.potNames !== undefined) row.pot_names = patch.potNames;
       if (patch.ntfyTopic !== undefined) row.ntfy_topic = patch.ntfyTopic;
+      if (patch.weatherLoc !== undefined) {                    // merge: weather.sql keeps its own keys (req, last) in the same column
+        const w = { ...((raw.household && raw.household.weather) || {}) };
+        delete w.lat; delete w.lon; delete w.label;
+        row.weather = patch.weatherLoc ? { ...w, lat: patch.weatherLoc.lat, lon: patch.weatherLoc.lon, label: patch.weatherLoc.label || '' } : w;
+      }
       const { error } = await client().from('household').update(row).eq('id', 1);
       if (error) throw new Error(error.message);
       await refresh(['household']);
+    },
+
+    // History charts: GROUP BY helpers from ../supabase/history.sql (rpc). Until Theo has run that file the rpc
+    // fails, and the last 3 days held in state.readings/events are bucketed here instead, flagged `partial`.
+    async history(days) {
+      const c = client(), tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'Europe/Berlin';
+      const [rd, ds, rf] = await Promise.all([
+        c.rpc('history_readings', { p_dev: id, p_days: days }),
+        c.rpc('history_doses', { p_dev: id, p_days: days, p_tz: tz }),
+        c.from('events').select('ts').eq('device_id', id).eq('kind', 'refill').gte('ts', new Date(Date.now() - days * 86400e3).toISOString()).order('ts', { ascending: true }).limit(200),
+      ]);
+      if (rd.error || ds.error) {
+        const h = historyFromLocal(state.readings, state.events, days, Date.now());
+        h.partial = true; h.note = `Only the last 3 days — run app/supabase/history.sql once (SETUP.md step 11). (${(rd.error || ds.error).message})`;
+        return h;
+      }
+      const DAY = 86400e3, d0 = new Date(); d0.setHours(0, 0, 0, 0); const from = d0.getTime() - (days - 1) * DAY;
+      const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: from + i * DAY, ml: 0 });
+      (ds.data || []).forEach(r => { const [y, m, d] = r.day.split('-').map(Number); const t = new Date(y, m - 1, d).getTime(); const i = Math.round((t - from) / DAY); if (i >= 0 && i < days) perDay[i].ml = num(r.ml, 0); });
+      const rows = rd.data || [];
+      return { days, from, tank: rows.filter(r => r.tank_ml !== null).map(r => ({ ts: ms(r.ts), ml: r.tank_ml })), temp: rows.filter(r => r.temp_c !== null).map(r => ({ ts: ms(r.ts), c: r.temp_c })),
+        perDay, refills: (rf.data || []).map(r => ms(r.ts)) };
+    },
+    async potHistory(ch, days) {
+      const c = client();
+      const [mo, ev] = await Promise.all([
+        c.rpc('history_pot', { p_dev: id, p_ch: ch, p_days: days }),
+        c.from('events').select('ts,detail').eq('device_id', id).eq('kind', 'dose').eq('ch', ch).gte('ts', new Date(Date.now() - days * 86400e3).toISOString()).order('ts', { ascending: true }).limit(500),
+      ]);
+      const doses = (ev.data || []).map(r => ({ ts: ms(r.ts), ml: num(r.detail && r.detail.ml, 0) }));
+      if (mo.error) return { days, moisture: [], doses, note: `Moisture history needs app/supabase/history.sql (SETUP.md step 11). (${mo.error.message})` };
+      return { days, moisture: (mo.data || []).map(r => ({ ts: ms(r.ts), pct: r.pct })), doses };
     },
 
     async login(email, password, staySignedIn) {

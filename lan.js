@@ -74,7 +74,7 @@ function createLanBackend(config) {
     device: { id: config.deviceId, name: 'Balcony · LAN (history since power-up)', fw: '?', ip: host, rssi: 0, up: 0, lastSeen: 0, intervalS: INTERVAL_S, havePCA: false },
     telemetry: { ts: 0, tempC: null, tempOK: false, tankLeft: 0, totalML: 0, pumpRunning: false, pumpEn: true, tempEn: true, ledEn: true, autoMin: 0, nextRoundAt: null, nSensors: 0, nServos: 0, mlPerSec: 30 },
     config: { openUs: 2500, closedUs: 1300, tankFull: TANK_FULL_FALLBACK, tankReserve: TANK_RESERVE_FALLBACK, minTempC: MIN_TEMP_FALLBACK, plausMargin: 250, maxPumpMs: 90000 },
-    pots: [], household: { potNames: lsGet('potNames', {}), ntfyTopic: '' },
+    pots: [], household: { potNames: lsGet('potNames', {}), ntfyTopic: '', weatherLoc: lsGet('weatherLoc', null) },
     lastRound: null, alerts: [], commands: [], events: [], readings: [],
   };
   const acked = lsGet('lanAckedAlerts', {});        // alert key → ackedAt
@@ -277,7 +277,10 @@ function createLanBackend(config) {
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
     sendCommand,
     async ackAlert(id) { const now = Date.now(); state.alerts.forEach(a => { if (id === 'all' || a.id === id) { a.ackedAt = a.ackedAt || now; acked[a.key] = a.ackedAt; } }); lsSet('lanAckedAlerts', acked); emit(); },
-    async setHousehold(patch) { Object.assign(state.household, patch); lsSet('potNames', state.household.potNames); emit(); },
+    async setHousehold(patch) { Object.assign(state.household, patch); lsSet('potNames', state.household.potNames); lsSet('weatherLoc', state.household.weatherLoc); emit(); },
+    // history since power-up only (the board keeps 48 events and this tab keeps one reading a minute); moisture history needs the cloud
+    async history(days) { const h = historyFromLocal(state.readings, state.events, days, Date.now()); h.partial = true; h.note = 'LAN mode: history since the controller was powered up, from this browser tab'; return h; },
+    async potHistory(ch, days) { const from = Date.now() - days * 86400e3; return { days, moisture: [], doses: state.events.filter(e => e.kind === 'dose' && e.ch === ch && e.ts >= from).map(e => ({ ts: e.ts, ml: e.ml })).sort((a, b) => a.ts - b.ts), note: 'Moisture history needs the cloud (samples table); LAN mode has only the live value.' }; },
     async login() { return { email: 'local network' }; },
     async logout() {},
     session() { return { email: 'local network' }; },   // always signed in: whoever is on the WiFi can reach the board
