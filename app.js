@@ -479,7 +479,8 @@ function renderSheet() {
   el.classList.add('open'); scrim.classList.add('open');
   if (sheet.type === 'pot') {
     if (!el.dataset.pot || +el.dataset.pot !== sheet.i) { el.dataset.pot = sheet.i; el.innerHTML = `<div class="grip"></div><div id="sheet-live"></div><div id="sheet-hist" class="section chart"></div><div id="sheet-form"></div>`; $('#sheet-form', el).innerHTML = potForm(state.pots[sheet.i]); }
-    $('#sheet-live', el).innerHTML = potLive(state.pots[sheet.i]);
+    const live = $('#sheet-live', el);
+    if (!(document.activeElement && live.contains(document.activeElement))) live.innerHTML = potLive(state.pots[sheet.i]);   // keep the amount field while it is being typed in
     $('#sheet-hist', el).innerHTML = potHist(state.pots[sheet.i]);
   } else if (sheet.type === 'confirm') {
     delete el.dataset.pot;
@@ -487,15 +488,19 @@ function renderSheet() {
       <div class="btn-row"><button class="btn" data-action="sheet-close">Cancel</button><button class="btn ${sheet.danger ? 'danger' : 'primary'}" data-action="confirm-go">${esc(sheet.ok)}</button></div>`;
   }
 }
+// "Water now" preset: the pot's plan dose, or the pot's own dose when it has no plan; sheet.ml = what Theo typed over it.
+function waterPreset(p) { ruLoad(); const pl = Rules.planOf(RU.rules, p.i); return pl ? pl.dose : p.doseML; }
+function waterML(v) { v = Math.round(+v / 10) * 10; return v >= 10 && v <= 2000 ? v : 0; }
 function potLive(p) {
-  const st = potState(p), budget = 2 * p.doseML;
+  const st = potState(p), budget = 2 * p.doseML, ml = sheet && sheet.ml > 0 ? sheet.ml : waterPreset(p);
   const last = state.events.find(e => e.ch === p.i && (e.kind === 'dose' || e.kind === 'refused'));
   return `<div class="row top"><div><h3>${esc(potName(p.i))}</h3>${chip(st.cls, st.label)}${p.valEn ? '' : ' ' + chip('off', 'valve off')}</div>
     <div class="kpi" style="text-align:right"><div class="v">${p.pct >= 0 ? p.pct + '<small>%</small>' : '—'}</div><div class="l">raw ${p.raw} · thr ${p.thrPct} %</div></div></div>
   <div class="bar ${st.cls}" style="margin:10px 0"><i style="width:${p.pct >= 0 ? p.pct : 0}%"></i><b style="left:${p.thrPct}%"></b></div>
   <div class="row faint" style="font-size:14px"><span>valve ${valveText(p)}</span><span>today ${p.todayML} / ${budget} mL budget</span><span>${p.air > 0 && p.water > 0 ? `air ${p.air} · water ${p.water}` : 'not calibrated'}</span></div>
   ${last ? `<div class="faint" style="font-size:14px;margin-top:6px">last: ${last.kind === 'dose' ? `${last.ml} mL` : `refused — ${reasonText(last.reason)}`} · ${ago(last.ts)}</div>` : ''}
-  <div class="btn-row" style="margin-top:12px"><button class="btn primary" data-action="cmd" data-cmd="water" data-ch="${p.i}" data-label="Water ${esc(potName(p.i))}">Water now (${p.doseML} mL)</button><button class="btn" data-action="cmd" data-cmd="vtest" data-ch="${p.i}" data-label="Valve test ${p.i + 1}">Valve test</button></div>`;
+  <div class="inline" style="margin-top:12px"><div class="field" style="flex:0 0 96px"><label>mL</label><input type="number" id="water-ml" data-input="water-ml" min="10" max="2000" step="10" value="${ml}" aria-label="Amount in millilitres"></div><button class="btn primary" id="water-now" data-action="water-now" data-arg="${p.i}" title="Controller firmware 0.4.3 or newer honours the amount">Water now · ${ml} mL</button><button class="btn" data-action="cmd" data-cmd="vtest" data-ch="${p.i}" data-label="Valve test ${p.i + 1}">Valve test</button></div>
+  <div class="faint" style="font-size:14px;margin-top:6px">Controller firmware 0.4.3 or newer honours the amount — older boards water the pot's own dose (${p.doseML} mL).</div>`;
 }
 function potHist(p) {
   potHistEnsure(p.i);
@@ -569,6 +574,7 @@ function onClick(e) {
     case 'fit-set': cmd('fit', { nSensors: +$('#fit-sen').value, nServos: +$('#fit-srv').value }, 'Fitted counts'); break;
     case 'flow-set': cmd('flow', { mlPerSec: +$('#flow').value }, 'Flow'); break;
     case 'vlim-set': cmd('vlim', { openUs: +$('#open-us').value, closedUs: +$('#closed-us').value }, 'Servo pulses'); break;
+    case 'water-now': { const i = +arg, ml = waterML($('#water-ml').value); if (!ml) { toast('Amount 10–2000 mL'); break; } sheet.ml = ml; cmd('water', { ch: i, ml }, `Water ${potName(i)} · ${ml} mL`); break; }
     case 'cal-type': cmd('cal', { ch: +arg, air: +$('#cal-air').value, water: +$('#cal-water').value }, `Calibration ${+arg + 1}`); break;
     case 'ntfy-set': backend.setHousehold({ ntfyTopic: $('#ntfy').value.trim() }); toast('Saved'); break;
     case 'wx-loc-set': { const lat = +$('#wx-lat').value, lon = +$('#wx-lon').value; if (Math.abs(lat) > 90 || Math.abs(lon) > 180 || !lat) { toast('Latitude −90…90, longitude −180…180'); break; } backend.setHousehold({ weatherLoc: { lat: +lat.toFixed(3), lon: +lon.toFixed(3), label: `${lat.toFixed(2)}, ${lon.toFixed(2)}` } }).then(() => toast('Location saved')); break; }
@@ -589,6 +595,11 @@ function onClick(e) {
     case 'mock-offline': backend.mock.setOffline(!backend.mock.isOffline()); break;
     case 'mock-dry': backend.mock.dryOut(0); toast('Pot 1 is now dry'); break;
   }
+}
+function onInput(e) {                                                  // the amount field: the button text follows what is typed
+  const el = e.target.closest('[data-input="water-ml"]'); if (!el || !sheet || sheet.type !== 'pot') return;
+  const ml = waterML(el.value); if (!ml) return;
+  sheet.ml = ml; const b = $('#water-now'); if (b) b.textContent = `Water now · ${ml} mL`;
 }
 function onChange(e) {
   const el = e.target.closest('[data-change]'); if (!el) return;
@@ -635,6 +646,7 @@ async function main() {
   });
   document.addEventListener('click', onClick);
   document.addEventListener('change', onChange);
+  document.addEventListener('input', onInput);
   document.addEventListener('keydown', (e) => {                       // ← → pan the chart on Glance / Tank
     if (sheet || !(screen === 'glance' || screen === 'tank') || /^(INPUT|SELECT|TEXTAREA)$/.test((e.target && e.target.tagName) || '')) return;
     if (e.key === 'ArrowLeft') { chartPan(screen === 'tank' ? HIST.days : 14, -1); e.preventDefault(); }

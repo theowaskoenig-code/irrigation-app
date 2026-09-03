@@ -28,7 +28,7 @@
 // Command mapping (app command → the console line POSTed to /api/cmd; the
 // firmware runs it through the SAME handle() as the serial console, so pot
 // numbers are 1-based there — ch + 1):
-//   water {ch}                 → w <n>
+//   water {ch, ml?}            → w <n> [<ml>]        (ml: firmware 0.4.3 or newer; older boards ignore it and use the pot's dose)
 //   run                        → run
 //   auto {min}                 → auto <min>          (0 = off)
 //   tank {full} / {ml}         → tank full / tank <mL>
@@ -205,7 +205,7 @@ function createLanBackend(config) {
   function toLine(cmd, a) {
     a = a || {};
     switch (cmd) {
-      case 'water': return `w ${n1(a)}`;
+      case 'water': return a.ml > 0 ? `w ${n1(a)} ${a.ml | 0}` : `w ${n1(a)}`;
       case 'run': return 'run';
       case 'auto': return `auto ${Math.max(0, a.min | 0)}`;
       case 'tank': return a.full ? 'tank full' : `tank ${Math.max(0, a.ml | 0)}`;

@@ -144,7 +144,8 @@ function createMockBackend(config) {
   }
   // plan: the watering plan the pot follows (app/RULES.md §5: mode dry = water below thr, always = skip above thr, the plan's dose
   // and daily cap); null = the 0.2.0 behaviour (the pot's own thr/dose, dry, 10 L/day).
-  async function waterPot(i, quiet, plan) {
+  // mlWanted: the amount from the app's "Water now" field (firmware 0.4.3 `w <n> <ml>`); 0/undefined = the plan's (or pot's) dose.
+  async function waterPot(i, quiet, plan, mlWanted) {
     const p = pots[i];
     const refuse = (reason) => { if (!quiet || reason !== 'wet') pushEvent({ kind: 'refused', ch: i, reason, raw: p.raw, pct: p.pct, tempC: ctl.tempC });
       if (['implausible', 'uncal', 'budget', 'nopca'].includes(reason)) raise(`pot_refused:${i}`, 'pot_refused', 'warn', i, `Pot ${i + 1} refused: ${reasonText(reason)}`);
@@ -160,7 +161,8 @@ function createMockBackend(config) {
     const thr = plan ? plan.thr : p.thrPct, dose = plan ? plan.dose : p.doseML;
     if (plan && plan.mode === 'always' ? p.pct > thr : p.pct >= thr) return refuse('wet');
     if (ctl.tempEn && ctl.tempOK && ctl.tempC < MIN_TEMP) return refuse('cold');
-    const ml = dose;
+    const ml = mlWanted > 0 ? clamp(Math.round(mlWanted / 10) * 10, 10, 2000) : dose;
+    if (1000 * ml / ctl.mlPerSec > MAX_PUMP_MS) return refuse('cap');                            // 90 s cap: ml ≤ mlPerSec × 90
     if (ctl.tankLeft - ml < TANK_RESERVE) return refuse('tank');
     if (p.todayML + ml > p.max * dose) return refuse('budget');                                   // per-pot budget: 2 × the dose
     const capPots = plan ? Rules.potsOf(ctl.rules, plan.id, N_CH).map(k => pots[k]) : pots;         // the plan's daily cap over its own pots
@@ -196,7 +198,7 @@ function createMockBackend(config) {
   function reasonText(r) {
     return { off: 'switched off or not fitted', nopca: 'no PCA9685 — cannot move a valve', uncal: 'not calibrated', implausible: 'implausible reading — sensor unplugged or broken',
       wet: 'wet enough, skipped', cold: 'too cold to water', tank: 'tank counter at the reserve', budget: 'daily budget already used', pump_disabled: 'pump is switched off',
-      aborted: 'aborted', bad_rules: 'the controller rejected the watering plan', no_plan: 'no such plan on the controller — apply the plan first', expired: 'expired — controller was offline', nosuch: 'no such pot' }[r] || r;
+      cap: 'more than the pump can give in 90 s', aborted: 'aborted', bad_rules: 'the controller rejected the watering plan', no_plan: 'no such plan on the controller — apply the plan first', expired: 'expired — controller was offline', nosuch: 'no such pot' }[r] || r;
   }
 
   // ---- command execution (handle()) ----
@@ -210,7 +212,7 @@ function createMockBackend(config) {
   async function execute(cmd, args) {
     const p = args && Number.isInteger(args.ch) ? pots[args.ch] : null;
     switch (cmd) {
-      case 'water': return waterPot(args.ch, false, ctl.rules ? Rules.planOf(ctl.rules, args.ch) : null);
+      case 'water': return waterPot(args.ch, false, ctl.rules ? Rules.planOf(ctl.rules, args.ch) : null, args.ml);
       case 'run': return { ok: true, ...(await runRound('cmd', null)) };
       case 'auto': ctl.autoMin = Math.max(0, args.min | 0); ctl.autoLast = Date.now(); return { ok: true, autoMin: ctl.autoMin };
       case 'tank': ctl.tankLeft = args.full ? TANK_FULL : clamp(args.ml | 0, 0, TANK_FULL); pushEvent({ kind: 'refill', tankLeft: ctl.tankLeft }); clear('tank_low'); clear('tank_reserve'); return { ok: true, tankLeft: ctl.tankLeft };
