@@ -3,7 +3,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 let backend, state, screen = 'glance', sheet = null, hwText = '';
-const SCREENS = ['glance', 'pots', 'tank', 'alerts', 'control', 'settings'];
+const SCREENS = ['glance', 'pots', 'tank', 'alerts', 'control', 'settings', 'rules'];   // rules = full-width screen behind Control (rules-ui.js)
 
 // ---------------------------------------------------------------- formatting
 function ago(ts) {
@@ -24,7 +24,7 @@ function chip(cls, label) { return `<span class="tag ${cls}">${SYM[cls] || ''} $
 function autoText(min) { return min >= 60 ? (min / 60) + ' h' : min + ' min'; }
 function nextRound() {
   const t = state.telemetry;
-  if (!t.autoMin) return { v: 'Auto off', s: 'start a round from Control' };
+  if (!t.autoMin && !t.nextRoundAt) return { v: 'Auto off', s: 'start a round from Control' };   // a rule schedule sets nextRoundAt with auto off
   const ms = t.nextRoundAt - Date.now();
   if (ms <= 0) return { v: 'due now', s: 'waiting for the controller' };
   const h = Math.floor(ms / 3600e3), m = Math.round(ms % 3600e3 / 60e3);
@@ -130,9 +130,9 @@ function renderGlance() {
     <div class="w"><div class="l">Tank</div><div class="v">${litres(t.tankLeft)}<small>L</small></div><div class="s">${d == null ? 'no history yet' : `<b>${d < 1 ? '< 1 day' : Math.floor(d) + (d >= 2 ? ' days' : ' day')}</b> left`} · ${Math.round(100 * t.tankLeft / c.tankFull)} % full</div></div>
     <div class="w"><div class="l">Temperature</div><div class="v">${t.tempEn && t.tempOK ? t.tempC.toFixed(1) + '<small>°C</small>' : '—'}</div><div class="s">${!t.tempEn ? 'probe switched off' : !t.tempOK ? '<b class="danger-text">no reading from the probe</b> — check red → 5 V, yellow → GPIO8, 4.7 kΩ' : (t.tempC < c.minTempC ? '<b class="danger-text">frost — watering suspended</b>' : 'no frost · watering allowed')}</div></div>
     <div class="w weather"><div class="l">Weather</div><div class="v">—</div><div class="s">forecast and rain-skip land here (phase 2)</div></div>
-    <div class="w"><div class="l">Pump · Auto</div><div class="v mid">${t.pumpRunning ? chip('open', 'pump running') : 'Idle'}</div><div class="s">${t.autoMin ? `Auto every ${autoText(t.autoMin)}` : 'Auto off'} · ${t.pumpEn ? 'ready' : '<b class="danger-text">pump switched OFF</b>'}</div></div>
+    <div class="w"><div class="l">Pump · Auto</div><div class="v mid">${t.pumpRunning ? chip('open', 'pump running') : 'Idle'}</div><div class="s">${t.rulesHash ? 'Rules schedule' : t.autoMin ? `Auto every ${autoText(t.autoMin)}` : 'Auto off'} · ${t.pumpEn ? 'ready' : '<b class="danger-text">pump switched OFF</b>'}</div></div>
     <div class="w"><div class="l">Next round</div><div class="v mid">${nr.v}</div><div class="s">${nr.s}</div></div>
-    <div class="w x2"><div class="l">Last round${lr ? ` · ${ago(lr.ts)}` : ''}</div><div class="s" style="font-size:18px;margin-top:2px">${lr ? `<b>${lr.watered} watered</b> · ${lr.skipped} skipped · ${lr.refused ? `<b class="danger-text">${lr.refused} refused</b>` : 'none refused'}` : 'no round yet'}</div></div>
+    <div class="w x2"><div class="l">Last round${lr ? ` · ${ago(lr.ts)}` : ''}</div><div class="s" style="font-size:18px;margin-top:2px">${lr ? `<b>${lr.watered} watered</b> · ${lr.skipped} skipped${lr.skippedBy ? ` (rule: ${esc(lr.skippedBy)})` : ''} · ${lr.refused ? `<b class="danger-text">${lr.refused} refused</b>` : 'none refused'}` : 'no round yet'}</div></div>
     <div class="x2"><div class="row" style="margin:4px 0 8px"><span class="l" style="font-weight:700">Pots · ${nDry} dry${nBad ? ` · ${nBad} problem${nBad > 1 ? 's' : ''}` : ''}</span><span class="faint" style="font-size:15px">tap a pot for details</span></div>
       <div class="pots">${pots}</div></div>
     <div class="w x2"><div class="acts"><button class="btn primary" data-action="cmd" data-cmd="run" data-label="Run a round">Run round</button><button class="btn" data-action="confirm-refill">Refilled</button><button class="btn danger-outline" data-action="confirm-stop">Stop</button></div></div>
@@ -217,6 +217,7 @@ function renderControl() {
     <button class="btn danger block" data-action="confirm-stop">Emergency stop</button>
     <div class="faint" style="font-size:14px">A round senses all pots first (pump off, valves limp), then waters dry pots one at a time through every interlock. Emergency stop cuts the pump and all servo PWM; closed valves stay closed on the cam.</div>
   </div>
+  ${rulesCard()}
   <div class="card"><h2>Commands</h2><div class="list">${cmds.length ? cmds.map(c => `<div class="cmd"><span>${esc(c.cmd)}${c.args && Object.keys(c.args).length ? ` <span class="faint mono">${esc(JSON.stringify(c.args))}</span>` : ''}</span><span class="st ${c.status}">${st(c)} · ${ago(c.ackedAt || c.createdAt)}</span></div>`).join('') : '<div class="empty">No commands yet</div>'}</div></div>`;
 }
 
@@ -325,10 +326,10 @@ function render() {
   const c = $('#conn'); c.className = `conn ${conn}`; c.querySelector('span:last-child').textContent = conn === 'online' ? `online · ${ago(state.device.lastSeen)}` : conn === 'stale' ? `stale · ${ago(state.device.lastSeen)}` : `offline · ${ago(state.device.lastSeen)}`;
   const nAlerts = state.alerts.filter(a => a.active && !a.ackedAt).length;
   const badge = $('#badge-alerts'); badge.hidden = !nAlerts; badge.textContent = nAlerts;
-  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.screen === screen));
-  const fn = { glance: renderGlance, pots: renderPots, tank: renderTank, alerts: renderAlerts, control: renderControl, settings: renderSettings }[screen];
+  document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.screen === (screen === 'rules' ? 'control' : screen)));
+  const fn = { glance: renderGlance, pots: renderPots, tank: renderTank, alerts: renderAlerts, control: renderControl, settings: renderSettings, rules: renderRules }[screen];
   const host = $(`#screen-${screen}`);
-  const focused = document.activeElement && host.contains(document.activeElement) && /^(INPUT|SELECT)$/.test(document.activeElement.tagName);
+  const focused = document.activeElement && host.contains(document.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
   if (!focused) host.innerHTML = fn();
   SCREENS.forEach(s => $(`#screen-${s}`).classList.toggle('active', s === screen));
   renderSheet();
@@ -343,6 +344,7 @@ function onClick(e) {
   switch (a) {
     case 'pot': sheet = { type: 'pot', i: +arg }; render(); break;
     case 'sheet-close': sheet = null; render(); break;
+    case 'go': go(arg); break;
     case 'cmd': {
       const args = {};
       if (el.dataset.ch != null) args.ch = +el.dataset.ch;

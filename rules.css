@@ -1,0 +1,29 @@
+/* rules.css — the Rules screen (rules-ui.js). Same tokens as styles.css: Style C "Clear", 2 px rules, 4 px radius, 50 px buttons. */
+.ru-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.ru-head .btn.sm { flex: none; }
+.ru-tabs { display: grid; grid-template-columns: repeat(3, 1fr); border: 2px solid var(--text); border-radius: var(--radius); overflow: hidden; margin-bottom: 12px; }
+.ru-tabs button { min-height: 50px; border: 0; background: var(--surface); color: var(--text); font-weight: 700; font-size: 16px; position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.ru-tabs button + button { border-left: 2px solid var(--text); }
+.ru-tabs button.active { background: var(--text); color: var(--bg); }
+.ru-tabs .badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--red); color: #fff; font-size: 12px; line-height: 20px; }
+.ru-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ru-chip { min-height: 44px; padding: 6px 12px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-weight: 700; font-size: 15px; }
+.ru-chip.sm { min-height: 40px; min-width: 44px; padding: 4px 8px; }
+.ru-chip.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.ru-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 16px; line-height: 1.3; }
+.ru-line input[type="number"] { width: 88px; min-height: 44px; padding: 6px 8px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: right; }
+.ru-line select, .ru-line input[type="time"] { min-height: 44px; padding: 6px 8px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); }
+.ru-range { width: 100%; height: 44px; accent-color: var(--accent); margin: 0; }
+textarea.ru-text { width: 100%; min-height: 280px; font-family: var(--mono); font-size: 15px; line-height: 1.5; padding: 10px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); resize: vertical; }
+textarea.ru-text.bad { border-color: var(--red); }
+textarea.ru-text:focus { outline: 3px solid var(--accent); outline-offset: -2px; }
+.ru-err { border-left: 6px solid var(--red); padding: 4px 10px; font-size: 15px; }
+.ru-err + .ru-err { margin-top: 8px; }
+.ru-err code { display: block; font-family: var(--mono); color: var(--text-2); font-size: 14px; margin-top: 2px; }
+.ru-ok { color: var(--green); font-weight: 700; font-size: 15px; }
+.ru-note { border-left: 6px solid var(--amber); padding: 4px 10px; font-size: 15px; }
+.ru-round .h { display: flex; justify-content: space-between; gap: 8px; font-weight: 700; margin-bottom: 4px; }
+.ru-round .skip { color: var(--amber); font-weight: 700; }
+.ru-cheat { font-size: 14px; color: var(--text-2); line-height: 1.6; }
+.ru-cheat summary { font-weight: 700; cursor: pointer; color: var(--text); }
+.ru-cheat code { font-family: var(--mono); font-size: 13px; background: var(--surface-2); padding: 1px 4px; border-radius: 3px; }

@@ -21,7 +21,7 @@ function hhmm(min) { return pad2(Math.floor(min / 60)) + ':' + pad2(min % 60); }
 // ---------------------------------------------------------------- tokenizer
 // Tokens: numbers, words, and the symbols the grammar uses. `°` is dropped so "30 °C" and "30 C" read the same.
 function tokenize(line) {
-  const out = []; const re = /\s*(\d+|[a-zA-ZäöüÄÖÜ]+|>=|<=|>|<|:|,|%|\/|\+|-|°|#)/y; let m, pos = 0;
+  const out = []; const re = /\s*(\d+|[a-zA-ZäöüÄÖÜ]+|>=|<=|>|<|=|:|,|%|\/|\+|-|°|#)/y; let m, pos = 0;
   while (pos < line.length) {
     re.lastIndex = pos; m = re.exec(line);
     if (!m) { if (/^\s*$/.test(line.slice(pos))) break; throw { msg: `unexpected "${line.slice(pos).trim()[0]}"`, hint: 'only letters, numbers, : , % / + - are used' }; }
@@ -98,7 +98,7 @@ function parseSchedule(p) {
   }
   p.sym(':', 'a colon separates when from what');
   p.word('water', 'e.g. …: water pots that are dry');
-  if (p.optWord('pot')) { s.pots = parsePotList(p); }
+  if (p.optWord('pot')) { s.pots = parsePotList(p); if (p.optWord('that')) p.words(['are', 'dry'], '"that are dry"'); }
   else {
     p.word('pots', 'e.g. …: water pots that are dry');
     if (p.isWord('that')) { p.words(['that', 'are', 'dry'], '"pots that are dry"'); s.pots = 'dry'; }

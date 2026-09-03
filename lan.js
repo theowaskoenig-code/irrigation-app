@@ -48,6 +48,8 @@
 //   refresh                    → r                    temp → t        sweep → s
 //   hwcheck                    → i                    (output goes to the serial console, not back to the app)
 //   reboot                     → reboot
+//   rules {…} / {clear:true}   → rules <json> / rules clear   (app/RULES.md)
+//   weather {rainPct,h,tMaxC}  → weather <pct> <h> <tMax>
 //   interval                   → not available in LAN mode (the app polls every 2 s) → ok:false, reason 'not_in_lan_mode'
 //
 // Result of a command: the controller answers {ok:true, queued:n} at once and
@@ -222,6 +224,8 @@ function createLanBackend(config) {
       case 'sweep': return 's';
       case 'hwcheck': return 'i';
       case 'reboot': return 'reboot';
+      case 'rules': return a.clear ? 'rules clear' : `rules ${JSON.stringify(a)}`;          // app/RULES.md §2
+      case 'weather': return `weather ${a.rainPct | 0} ${a.h | 0} ${a.tMaxC | 0}`;
       default: return null;                    // interval, unknown
     }
   }
