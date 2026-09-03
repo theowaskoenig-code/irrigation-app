@@ -238,6 +238,7 @@ function createMockBackend(config) {
       case 'vlim': ctl.openUs = clamp(args.openUs | 0, 500, 2500); ctl.closedUs = clamp(args.closedUs | 0, 500, 2500); return { ok: true, openUs: ctl.openUs, closedUs: ctl.closedUs };
       case 'v': p.vState = { o: 2, c: 1, x: 3 }[args.st] ?? 0; return { ok: true, ch: p.i, vState: p.vState };
       case 'vtest': p.vState = 2; emit(); await sleep(1000); p.vState = 1; emit(); await sleep(700); p.vState = 3; return { ok: true };
+      case 'reseat': for (const q of pots.slice(0, ctl.nServos)) { if (!q.valEn) continue; q.vState = 1; emit(); await sleep(300); q.vState = 3; emit(); } return { ok: true };
       case 'vall': if (args.st === 'c') { for (const q of pots.slice(0, ctl.nServos)) { q.vState = 1; emit(); await sleep(300); } } pots.forEach(q => q.vState = 3); return { ok: true };
       case 'p': { const r = await pumpMs(clamp(+args.sec || 0, 0, 90) * 1000, 'manual'); return { ...r, sec: args.sec }; }
       case 'pstop': abortPump = true; return { ok: true };

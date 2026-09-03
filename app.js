@@ -79,7 +79,7 @@ function toast(msg, ms = 2600) {
 }
 // Commands that move water or a valve are sent once: while one of them is queued or sent, a second tap is refused and the
 // buttons that would send it are disabled (review A1). `stop` is deliberately not in the list — it must always go through.
-const CMD_WORD = { run: 'A round', water: 'A watering', p: 'A pump run', plan_run: 'A plan round', v: 'A valve move', vtest: 'A valve test', vall: 'A close-all', tank: 'A tank change' };
+const CMD_WORD = { run: 'A round', water: 'A watering', p: 'A pump run', plan_run: 'A plan round', v: 'A valve move', vtest: 'A valve test', vall: 'A close-all', reseat: 'A re-seat', tank: 'A tank change' };
 const inflight = new Set();
 function cmdPending(name) { return inflight.has(name) || state.commands.some(c => c.cmd === name && (c.status === 'queued' || c.status === 'sent')); }
 function dis(name) { return cmdPending(name) ? ' disabled' : ''; }
@@ -374,6 +374,7 @@ function cmdText(c) {
     case 'v': return `Valve of ${pot(a.ch)} ${VS[a.st] || ''}`;
     case 'vtest': return `Valve test ${pot(a.ch)}`;
     case 'vall': return 'Close all valves';
+    case 'reseat': return 'Re-seat all valves';
     case 'p': return `Pump ${a.sec} s`;
     case 'pstop': return 'Stop the pump';
     case 'stop': return 'Emergency stop';
@@ -450,6 +451,8 @@ function renderBench() {
       <h2>Valves</h2>
       <div class="list">${valves || '<div class="empty">No servos fitted</div>'}</div>
       <button class="btn block" data-action="cmd" data-cmd="vall" data-st="c" data-label="Close all valves"${dis('vall')}>Close all, then limp</button>
+      <button class="btn block" data-action="cmd" data-cmd="reseat" data-label="Re-seat all valves"${dis('reseat')}>Re-seat all valves</button>
+      <div class="faint" style="font-size:14px">Pushes every closed valve shut again — the board also does this after each round and once an hour.</div>
       <div class="faint" style="font-size:14px">An open valve holds ~0.25 A — open ONE at a time and close it again. Test = open 1 s, close, limp. Limp cuts the signal; the cam keeps a closed valve shut.</div>
     </div>
     <div class="card section">

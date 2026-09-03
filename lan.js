@@ -41,7 +41,7 @@
 //   fit {nSensors,nServos}     → fit <sen> <srv>
 //   flow {mlPerSec}            → flow <mL/s>
 //   vlim {openUs,closedUs}     → vlim <open> <closed>
-//   v {ch,st}                  → v <n> o|c|x          vtest {ch} → vtest <n>      vall {st} → vall c|x
+//   v {ch,st}                  → v <n> o|c|x          vtest {ch} → vtest <n>      vall {st} → vall c|x     reseat {} → vseat
 //   p {sec}                    → p <sec>              pstop → pstop
 //   stop                       → !                    (emergency stop — acts immediately, even mid-dose)
 //   save / defaults            → save / defaults
@@ -215,6 +215,7 @@ function createLanBackend(config) {
       case 'v': return `v ${n1(a)} ${a.st}`;
       case 'vtest': return `vtest ${n1(a)}`;
       case 'vall': return `vall ${a.st || 'x'}`;
+      case 'reseat': return 'vseat';
       case 'p': return `p ${a.sec | 0}`;
       case 'pstop': return 'pstop';
       case 'stop': return '!';
