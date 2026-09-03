@@ -77,7 +77,7 @@ function createLanBackend(config) {
   const state = {
     device: { id: config.deviceId, name: 'Balcony · LAN (history since power-up)', fw: '?', ip: host, rssi: 0, up: 0, lastSeen: 0, intervalS: INTERVAL_S, havePCA: false },
     telemetry: { ts: 0, tempC: null, tempOK: false, tankLeft: 0, totalML: 0, pumpRunning: false, pumpEn: true, tempEn: true, ledEn: true, autoMin: 0, nextRoundAt: null, nSensors: 0, nServos: 0, mlPerSec: 30 },
-    config: { openUs: 2500, closedUs: 1300, tankFull: TANK_FULL_FALLBACK, tankReserve: TANK_RESERVE_FALLBACK, minTempC: MIN_TEMP_FALLBACK, plausMargin: 250, maxPumpMs: 90000 },
+    config: { openUs: 2500, closedUs: 1300, tankFull: TANK_FULL_FALLBACK, tankReserve: TANK_RESERVE_FALLBACK, minTempC: MIN_TEMP_FALLBACK, plausMargin: 250, maxPumpMs: 90000, potCapML: 1800 },
     pots: [], household: { potNames: lsGet('potNames', {}), ntfyTopic: '', weatherLoc: lsGet('weatherLoc', null) },
     lastRound: null, alerts: [], commands: [], events: [], readings: [],
   };
@@ -112,7 +112,7 @@ function createLanBackend(config) {
       planNext: s.planNext > 0 ? s.planNext : 0,
     };
     state.config = { openUs: s.servo.open_us, closedUs: s.servo.closed_us, tankFull: s.tank.full_ml, tankReserve: s.tank.reserve_ml,
-      minTempC: s.limits.min_temp_c, plausMargin: s.limits.plaus_margin, maxPumpMs: s.limits.max_pump_ms };
+      minTempC: s.limits.min_temp_c, plausMargin: s.limits.plaus_margin, maxPumpMs: s.limits.max_pump_ms, potCapML: s.limits.pot_cap_ml == null ? 1800 : s.limits.pot_cap_ml };
     state.pots = s.pots.map(p => ({ i: p.n - 1, raw: p.raw, pct: p.pct, sState: p.s_state, vState: p.v_state, todayML: p.today_ml,
       air: p.air, water: p.water, thrPct: p.thr_pct, doseML: p.dose_ml, senEn: !!p.sen_en, valEn: !!p.val_en }));
     // events: the board sends newest first; the contract wants newest first too
@@ -211,6 +211,7 @@ function createLanBackend(config) {
       case 'en': return `en ${a.what} ${a.on ? 'on' : 'off'}`;
       case 'fit': return `fit ${a.nSensors | 0} ${a.nServos | 0}`;
       case 'flow': return `flow ${+a.mlPerSec || 30}`;
+      case 'potcap': return `potcap ${(a.ml | 0) > 0 ? a.ml | 0 : 'off'}`;
       case 'vlim': return `vlim ${a.openUs | 0} ${a.closedUs | 0}`;
       case 'v': return `v ${n1(a)} ${a.st}`;
       case 'vtest': return `vtest ${n1(a)}`;

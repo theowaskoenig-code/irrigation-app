@@ -370,6 +370,7 @@ function cmdText(c) {
     case 'en': return `${enWord(a.what)} ${a.on ? 'on' : 'off'}`;
     case 'fit': return `${a.nSensors} sensors and ${a.nServos} servos fitted`;
     case 'flow': return `Flow ${a.mlPerSec} mL/s`;
+    case 'potcap': return (a.ml | 0) > 0 ? `Daily limit per pot ${a.ml} mL` : 'Daily limit per pot off';
     case 'vlim': return `Servo pulses ${a.openUs} / ${a.closedUs} µs`;
     case 'v': return `Valve of ${pot(a.ch)} ${VS[a.st] || ''}`;
     case 'vtest': return `Valve test ${pot(a.ch)}`;
@@ -516,6 +517,8 @@ function renderSettings() {
     <div class="inline"><div class="field"><label>Sensors fitted</label><input type="number" id="fit-sen" min="0" max="16" value="${t.nSensors}"></div><div class="field"><label>Servos fitted</label><input type="number" id="fit-srv" min="0" max="16" value="${t.nServos}"></div><button class="btn" data-action="fit-set">Apply</button></div>
     <div class="inline"><div class="field"><label>Flow (mL/s)</label><input type="number" id="flow" step="0.1" min="0.1" value="${t.mlPerSec}"><span class="hint">30 = free-flow bench value; measure it on the Test bench (Control)</span></div><button class="btn" data-action="flow-set">Apply</button></div>
     <div class="inline"><div class="field"><label>Servo open (µs)</label><input type="number" id="open-us" min="500" max="2500" value="${c.openUs}"></div><div class="field"><label>closed (µs)</label><input type="number" id="closed-us" min="500" max="2500" value="${c.closedUs}"></div><button class="btn" data-action="vlim-set">Apply</button></div>
+    <div class="row"><div class="stack"><span>Daily limit per pot</span><span class="faint" style="font-size:14px">${c.potCapML > 0 ? `no pot gets more than ${c.potCapML} mL a day, whatever the plan says` : '<b class="danger-text">off</b> — a pot may be watered any number of times a day; only the plan\'s daily cap remains'}</span></div><button class="switch" role="switch" aria-checked="${c.potCapML > 0}" data-action="potcap-toggle" data-on="${!(c.potCapML > 0)}"></button></div>
+    ${c.potCapML > 0 ? `<div class="inline"><div class="field"><label>Limit (mL per pot and day)</label><input type="number" id="pot-cap" min="100" max="20000" step="50" value="${c.potCapML}"></div><button class="btn" data-action="potcap-set">Apply</button></div>` : ''}
     <div class="row"><div class="stack"><span>Temperature probe</span><span class="faint" style="font-size:14px">frost interlock below ${c.minTempC} °C</span></div><button class="switch" role="switch" aria-checked="${t.tempEn}" data-action="en" data-what="temp" data-on="${!t.tempEn}"></button></div>
     <div class="row"><div class="stack"><span>Pump</span><span class="faint" style="font-size:14px">off = the whole system is dry-run</span></div><button class="switch" role="switch" aria-checked="${t.pumpEn}" data-action="en" data-what="pump" data-on="${!t.pumpEn}"></button></div>
   </div>
@@ -563,12 +566,12 @@ function renderSheet() {
 function waterPreset(p) { ruLoad(); const pl = Rules.planOf(RU.rules, p.i); return pl ? pl.dose : p.doseML; }
 function waterML(v) { v = Math.round(+v / 10) * 10; return v >= 10 && v <= 2000 ? v : 0; }
 function potLive(p) {
-  const st = potState(p), budget = 2 * p.doseML, ml = sheet && sheet.ml > 0 ? sheet.ml : waterPreset(p);
+  const st = potState(p), cap = state.config.potCapML | 0, ml = sheet && sheet.ml > 0 ? sheet.ml : waterPreset(p);
   const last = state.events.find(e => e.ch === p.i && (e.kind === 'dose' || e.kind === 'refused'));
   return `<div class="row top"><div><h3>${esc(potName(p.i))}</h3>${chip(st.cls, st.label)}${p.valEn ? '' : ' ' + chip('off', 'valve off')}</div>
     <div class="kpi" style="text-align:right"><div class="v">${p.pct >= 0 ? p.pct + '<small>%</small>' : '—'}</div><div class="l">moisture reading ${p.raw} · waters below ${p.thrPct} %</div></div></div>
   <div class="bar ${st.cls}" style="margin:10px 0"><i style="width:${p.pct >= 0 ? p.pct : 0}%"></i><b style="left:${p.thrPct}%"></b></div>
-  <div class="row faint" style="font-size:14px"><span>valve ${valveText(p)}</span><span>today ${p.todayML} of ${budget} mL allowed</span><span>${p.air > 0 && p.water > 0 ? `dry reading ${p.air} · wet reading ${p.water}` : 'not calibrated'}</span></div>
+  <div class="row faint" style="font-size:14px"><span>valve ${valveText(p)}</span><span>${cap > 0 ? `today ${p.todayML} of ${cap} mL allowed` : `today ${p.todayML} mL · no daily limit`}</span><span>${p.air > 0 && p.water > 0 ? `dry reading ${p.air} · wet reading ${p.water}` : 'not calibrated'}</span></div>
   ${last ? `<div class="faint" style="font-size:14px;margin-top:6px">last: ${last.kind === 'dose' ? `${esc(last.ml)} mL` : `refused — ${esc(reasonText(last.reason))}`} · ${ago(last.ts)}</div>` : ''}
   <div class="inline" style="margin-top:12px"><div class="field" style="flex:0 0 96px"><label>mL</label><input type="number" id="water-ml" data-input="water-ml" min="10" max="2000" step="10" value="${ml}" aria-label="Amount in millilitres"></div><button class="btn primary" id="water-now" data-action="water-now" data-arg="${p.i}"${dis('water')}>Water now · ${ml} mL</button><button class="btn" data-action="cmd" data-cmd="vtest" data-ch="${p.i}" data-label="Valve test ${p.i + 1}"${dis('vtest')}>Valve test</button></div>
   <div class="faint" style="font-size:14px;margin-top:6px">Controller firmware 0.4.3 or newer honours the amount — older boards water the pot's own dose (${p.doseML} mL).</div>`;
@@ -647,6 +650,8 @@ function onClick(e) {
     case 'interval-set': { const v = num('#interval-s', 60, 3600, 'Readings interval in seconds'); if (v !== null) cmd('interval', { s: v }, 'Telemetry interval'); break; }
     case 'fit-set': { const ns = num('#fit-sen', 0, 16, 'Sensors fitted'), nv = ns === null ? null : num('#fit-srv', 0, 16, 'Servos fitted'); if (nv !== null) cmd('fit', { nSensors: Math.round(ns), nServos: Math.round(nv) }, 'Fitted counts'); break; }
     case 'flow-set': { const f = num('#flow', 0.1, 200, 'Flow in mL per second'); if (f !== null) cmd('flow', { mlPerSec: +f.toFixed(1) }, 'Flow'); break; }
+    case 'potcap-toggle': cmd('potcap', { ml: el.dataset.on === 'true' ? 1800 : 0 }, el.dataset.on === 'true' ? 'Daily limit per pot on' : 'Daily limit per pot off'); break;
+    case 'potcap-set': { const v = num('#pot-cap', 100, 20000, 'Daily limit per pot in mL'); if (v !== null) cmd('potcap', { ml: Math.round(v) }, 'Daily limit per pot'); break; }
     case 'vlim-set': { const o = num('#open-us', 500, 2500, 'Servo open pulse'), c = o === null ? null : num('#closed-us', 500, 2500, 'Servo closed pulse'); if (c !== null) cmd('vlim', { openUs: Math.round(o), closedUs: Math.round(c) }, 'Servo pulses'); break; }
     case 'water-now': {                                                    // the same short confirm as Run round (review A8); the pot sheet comes back behind it
       const i = +arg, v = num('#water-ml', 10, 2000, 'Amount in mL'); if (v === null) break;

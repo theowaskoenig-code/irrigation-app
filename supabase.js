@@ -115,7 +115,7 @@ function createSupabaseBackend(config) {
         nSensors: num(sp.nSensors, num(cp.nSensors, 0)), nServos: num(sp.nServos, num(cp.nServos, 0)), mlPerSec: num(sp.mlPerSec, num(cp.mlPerSec, 30)),
         rulesHash: typeof sp.rulesHash === 'string' ? sp.rulesHash : undefined, planNext: num(sp.planNext, 0) },   // rulesHash undefined = firmware before the watering plan (app/RULES.md §2)
       config: { openUs: num(cp.openUs, 2500), closedUs: num(cp.closedUs, 1300), tankFull: num(cp.tankFull, 25000), tankReserve: num(cp.tankReserve, 500),
-        minTempC: num(cp.minTempC, 3), plausMargin: num(cp.plausMargin, 250), maxPumpMs: num(cp.maxPumpMs, 90000) },
+        minTempC: num(cp.minTempC, 3), plausMargin: num(cp.plausMargin, 250), maxPumpMs: num(cp.maxPumpMs, 90000), potCapML: num(cp.potCapML, 1800) },
       pots,
       household: { potNames: hh.pot_names || {}, ntfyTopic: hh.ntfy_topic || '',
         weatherLoc: hh.weather && Number.isFinite(hh.weather.lat) && Number.isFinite(hh.weather.lon) ? { lat: hh.weather.lat, lon: hh.weather.lon, label: hh.weather.label || '' } : null },

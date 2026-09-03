@@ -31,6 +31,7 @@ function createMockBackend(config) {
   pots[14].valEn = false;                                              // valve off
 
   const ctl = {
+    potCapML: 1800,                                            // global daily limit per pot (0 = off), firmware 0.4.8
     nSensors: 16, nServos: 16, openUs: 2500, closedUs: 1300, mlPerSec: 30.0,
     tankLeft: 15250, totalML: 9750, pumpRunning: false, pumpEn: true, tempEn: true, ledEn: true,
     autoMin: 720, tempC: 19.6, tempOK: true, havePCA: true, up: 3 * 86400 + 4212,
@@ -119,7 +120,7 @@ function createMockBackend(config) {
       pumpRunning: ctl.pumpRunning, pumpEn: ctl.pumpEn, tempEn: ctl.tempEn, ledEn: ctl.ledEn, autoMin: ctl.autoMin,
       nextRoundAt: nextRoundMs(), rulesHash: ctl.rulesHash, planNext: planNext(), rainPct: ctl.rainPct, rainH: ctl.rainH, wxAgeS: Math.round((Date.now() - ctl.wxAt) / 1000),
       nSensors: ctl.nSensors, nServos: ctl.nServos, mlPerSec: ctl.mlPerSec };
-    state.config = { openUs: ctl.openUs, closedUs: ctl.closedUs, tankFull: TANK_FULL, tankReserve: TANK_RESERVE, minTempC: MIN_TEMP, plausMargin: PLAUS_MARGIN, maxPumpMs: MAX_PUMP_MS };
+    state.config = { openUs: ctl.openUs, closedUs: ctl.closedUs, tankFull: TANK_FULL, tankReserve: TANK_RESERVE, minTempC: MIN_TEMP, plausMargin: PLAUS_MARGIN, maxPumpMs: MAX_PUMP_MS, potCapML: ctl.potCapML };
     state.pots = pots.map(p => ({ i: p.i, raw: p.raw, pct: p.pct, sState: p.sState, vState: p.vState, todayML: p.todayML,
       air: p.air, water: p.water, thrPct: p.thrPct, doseML: p.doseML, max: p.max, senEn: p.senEn, valEn: p.valEn }));
     state.device.up = ctl.up; state.device.havePCA = ctl.havePCA;
@@ -164,7 +165,7 @@ function createMockBackend(config) {
     const ml = mlWanted > 0 ? clamp(Math.round(mlWanted / 10) * 10, 10, 2000) : dose;
     if (1000 * ml / ctl.mlPerSec > MAX_PUMP_MS) return refuse('cap');                            // 90 s cap: ml ≤ mlPerSec × 90
     if (ctl.tankLeft - ml < TANK_RESERVE) return refuse('tank');
-    if (p.todayML + ml > p.max * dose) return refuse('budget');                                   // per-pot budget: 2 × the dose
+    if (ctl.potCapML > 0 && p.todayML + ml > ctl.potCapML) return refuse('budget');              // global daily limit per pot (0 = off)
     const capPots = plan ? Rules.potsOf(ctl.rules, plan.id, N_CH).map(k => pots[k]) : pots;         // the plan's daily cap over its own pots
     if (todayTotal(capPots) + ml > (plan ? plan.dailyML : 10000)) return refuse('budget');          // (review #13)
     const ms = 1000 * ml / ctl.mlPerSec;
@@ -234,6 +235,7 @@ function createMockBackend(config) {
         return { ok: true, what: w, on };
       }
       case 'fit': ctl.nSensors = clamp(args.nSensors | 0, 0, N_CH); ctl.nServos = clamp(args.nServos | 0, 0, N_CH); return { ok: true, nSensors: ctl.nSensors, nServos: ctl.nServos };
+      case 'potcap': { const v = args.ml | 0; ctl.potCapML = v > 0 ? clamp(v, 100, 20000) : 0; return { ok: true, potCapML: ctl.potCapML }; }
       case 'flow': ctl.mlPerSec = Math.max(0.1, +args.mlPerSec || 30); return { ok: true, mlPerSec: ctl.mlPerSec };
       case 'vlim': ctl.openUs = clamp(args.openUs | 0, 500, 2500); ctl.closedUs = clamp(args.closedUs | 0, 500, 2500); return { ok: true, openUs: ctl.openUs, closedUs: ctl.closedUs };
       case 'v': p.vState = { o: 2, c: 1, x: 3 }[args.st] ?? 0; return { ok: true, ch: p.i, vState: p.vState };
