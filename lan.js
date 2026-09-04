@@ -117,7 +117,7 @@ function createLanBackend(config) {
       air: p.air, water: p.water, thrPct: p.thr_pct, doseML: p.dose_ml, senEn: !!p.sen_en, valEn: !!p.val_en }));
     // events: the board sends newest first; the contract wants newest first too
     state.events = s.events.map(e => {
-      const ev = { id: `${e.ms}:${e.type}:${e.pot}`, ts: msToTs(e.ms), kind: e.type, ml: e.ml, tankLeft: e.tank, note: e.note };
+      const ev = { id: `${e.ms}:${e.type}:${e.pot}`, ts: msToTs(e.ms), kind: e.type === 'refill' && e.note === 'set' ? 'level' : e.type, ml: e.ml, tankLeft: e.tank, note: e.note };   // `tank <mL>` = a level set, not a refill
       if (e.pot > 0) ev.ch = e.pot - 1;
       if (e.type === 'refused') ev.reason = e.note;
       if (e.type === 'dose') ev.sec = s.flow_ml_s > 0 ? +(e.ml / s.flow_ml_s).toFixed(1) : null;
@@ -134,7 +134,7 @@ function createLanBackend(config) {
     // readings for the tank sparkline: seed from the level events once, then one point a minute
     if (!firstPollDone) {
       firstPollDone = true;
-      state.readings = state.events.filter(e => e.kind === 'round' || e.kind === 'refill' || e.kind === 'boot').map(e => ({ ts: e.ts, tankLeft: e.tankLeft, tempC: null })).sort((a, b) => a.ts - b.ts);
+      state.readings = state.events.filter(e => e.kind === 'round' || e.kind === 'refill' || e.kind === 'level' || e.kind === 'boot').map(e => ({ ts: e.ts, tankLeft: e.tankLeft, tempC: null })).sort((a, b) => a.ts - b.ts);
     }
     if (now - lastReadingAt >= 60e3) { lastReadingAt = now; state.readings.push({ ts: now, tankLeft: s.tank.ml, tempC: s.temp_c }); if (state.readings.length > 2000) state.readings.shift(); }
     evalAlerts(now);

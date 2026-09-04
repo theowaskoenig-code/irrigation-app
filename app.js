@@ -210,7 +210,6 @@ function tankChart(h) {
   if (d) s += `<path class="tank" d="${d}"/>`;
   h.refills.forEach(ts => { const X = x(ts); s += `<polygon class="refill" points="${(X - 6).toFixed(1)},${P0 + 2} ${(X + 6).toFixed(1)},${P0 + 2} ${X.toFixed(1)},${P0 + 12}"><title>refill · ${esc(whenDate(ts))}</title></polygon>`; });   // the word is in the legend, so nothing collides with the rain bars
   if (nowIn) {
-    s += `<line class="nowline" x1="${x(now).toFixed(1)}" x2="${x(now).toFixed(1)}" y1="${P0}" y2="${P1}"/>`;
     const right = x(now) + 60 < CW - CPR2;                         // the label goes into the (empty) future side when there is room
     s += `<circle class="now" cx="${x(now).toFixed(1)}" cy="${yT(t.tankLeft).toFixed(1)}" r="4"/><text class="lbl acc" x="${(x(now) + (right ? 7 : -7)).toFixed(1)}" y="${(yT(t.tankLeft) + 4).toFixed(1)}" text-anchor="${right ? 'start' : 'end'}">${litres(t.tankLeft)} L</text>`;
   }
@@ -319,7 +318,7 @@ function renderPots() {
 
 function renderTank() {
   const t = state.telemetry, c = state.config, pct = Math.round(100 * t.tankLeft / c.tankFull), d = daysLeft(), u = dailyUse();
-  const refills = state.events.filter(e => e.kind === 'refill').slice(0, 10);
+  const refills = state.events.filter(e => e.kind === 'refill' || e.kind === 'level').slice(0, 10);   // ▲ in the chart = refills only; level sets are listed here
   const todayML = state.pots.reduce((s, p) => s + p.todayML, 0);
   return `
   <div class="card">
@@ -339,7 +338,7 @@ function renderTank() {
     <button class="btn primary block" data-action="confirm-refill"${dis('tank')}>Refilled — mark tank full</button>
     <div class="inline"><div class="field"><label>Or set the level by hand (mL)</label><input type="number" id="tank-ml" min="0" max="${c.tankFull}" step="250" placeholder="${t.tankLeft}"></div><button class="btn" data-action="tank-set"${dis('tank')}>Set</button></div>
   </div>
-  <div class="card"><h2>Refills</h2><div class="list">${refills.length ? refills.map(e => `<div class="row"><span>${whenDate(e.ts)}</span><span class="muted">${litres(+e.tankLeft || 0)} L</span></div>`).join('') : '<div class="empty">No refills recorded</div>'}</div></div>`;
+  <div class="card"><h2>Refills &amp; level sets</h2><div class="list">${refills.length ? refills.map(e => `<div class="row"><span>${whenDate(e.ts)}${e.kind === 'level' ? ' <span class="faint">· level set</span>' : ''}</span><span class="muted">${litres(+e.tankLeft || 0)} L</span></div>`).join('') : '<div class="empty">No refills recorded</div>'}</div></div>`;
 }
 
 function renderAlerts() {
@@ -562,7 +561,7 @@ function renderSheet() {
   } else if (sheet.type === 'confirm') {
     delete el.dataset.pot;
     el.innerHTML = `<div class="grip"></div><h3>${esc(sheet.title)}</h3><p class="muted">${esc(sheet.body)}</p>
-      <div class="btn-row"><button class="btn" data-action="sheet-close">Cancel</button><button class="btn ${sheet.danger ? 'danger' : 'primary'}" data-action="confirm-go">${esc(sheet.ok)}</button></div>`;
+      <div class="btn-row"><button class="btn" data-action="sheet-close">Cancel</button>${sheet.alt ? `<button class="btn" data-action="confirm-alt">${esc(sheet.alt.label)}</button>` : ''}<button class="btn ${sheet.danger ? 'danger' : 'primary'}" data-action="confirm-go">${esc(sheet.ok)}</button></div>`;
   }
 }
 // "Water now" preset: the pot's plan dose, or the pot's own dose when it has no plan; sheet.ml = what Theo typed over it.
@@ -647,7 +646,19 @@ function onClick(e) {
     case 'confirm-refill': sheet = { type: 'confirm', title: 'Tank refilled?', body: 'Sets the counter to 25 L. Only do this after actually topping the tank up.', ok: 'Yes, mark full', run: () => cmd('tank', { full: true }, 'Tank full') }; render(); break;
     case 'confirm-stop': sheet = { type: 'confirm', danger: true, title: 'Emergency stop', body: 'Cuts the pump and every servo signal immediately. Closed valves stay closed on the cam; an open one stays open until you close it. Auto mode is not changed.', ok: 'Stop everything', run: () => cmd('stop', {}, 'Emergency stop') }; render(); break;
     case 'confirm-go': { const r = sheet.run; sheet = null; render(); r(); break; }
-    case 'tank-set': { const v = num('#tank-ml', 0, state.config.tankFull, 'Tank level in mL'); if (v !== null) cmd('tank', { ml: Math.round(v) }, `Tank ${Math.round(v)} mL`); break; }
+    case 'confirm-alt': { const r = sheet.alt.run; sheet = null; render(); r(); break; }
+    case 'tank-set': {   // a level set is an adjustment, not a refill; when the pump ran since the last set it can also correct the flow constant — only on ask
+      const v = num('#tank-ml', 0, state.config.tankFull, 'Tank level in mL'); if (v === null) break;
+      const ml = Math.round(v), t = state.telemetry, setOnly = () => cmd('tank', { ml }, `Tank ${ml} mL`);
+      const base = state.events.find(e => e.kind === 'refill' || e.kind === 'level'), b = base ? +base.tankLeft : NaN;
+      const booked = b - t.tankLeft, real = b - ml;   // what the counter subtracted since the last refill / level set vs what the tank actually lost
+      if (!(booked >= 500) || !(real > 0) || Math.abs(real - booked) < 0.05 * booked) { setOnly(); break; }
+      const flow = t.mlPerSec, newFlow = +(flow * real / booked).toFixed(1), secs = Math.round(booked / flow);
+      sheet = { type: 'confirm', title: 'Adjust the pump flow too?',
+        body: `Since the last refill or level set the pump ran about ${secs} s and the counter booked ${litres(booked)} L. Your reading says the tank lost ${litres(real)} L — that points to ${newFlow} mL/s instead of ${flow}. Say yes only if every run since then really pumped water (no dry runs with the pump switched off).`,
+        ok: `Set level and flow ${newFlow} mL/s`, run: () => { cmd('flow', { mlPerSec: newFlow }, 'Flow'); setOnly(); },
+        alt: { label: 'Set level only', run: setOnly } };
+      render(); break; }
     case 'auto-toggle': { const m = state.telemetry.autoMin ? 0 : num('#auto-min', 60, 1440, 'Interval'); if (m !== null) cmd('auto', { min: m }, state.telemetry.autoMin ? 'Auto off' : 'Auto on'); break; }
     case 'auto-set': { const m = num('#auto-min', 60, 1440, 'Interval'); if (m !== null) cmd('auto', { min: m }, 'Auto interval'); break; }
     case 'interval-set': { const v = num('#interval-s', 60, 3600, 'Readings interval in seconds'); if (v !== null) cmd('interval', { s: v }, 'Telemetry interval'); break; }

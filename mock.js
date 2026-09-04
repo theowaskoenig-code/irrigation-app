@@ -211,7 +211,7 @@ function createMockBackend(config) {
       case 'water': return waterPot(args.ch, false, ctl.rules ? Rules.planOf(ctl.rules, args.ch) : null, args.ml);
       case 'run': return { ok: true, ...(await runRound('cmd', null)) };
       case 'auto': ctl.autoMin = Math.max(0, args.min | 0); ctl.autoLast = Date.now(); return { ok: true, autoMin: ctl.autoMin };
-      case 'tank': ctl.tankLeft = args.full ? TANK_FULL : clamp(args.ml | 0, 0, TANK_FULL); pushEvent({ kind: 'refill', tankLeft: ctl.tankLeft }); clear('tank_low'); clear('tank_reserve'); return { ok: true, tankLeft: ctl.tankLeft };
+      case 'tank': { const prev = ctl.tankLeft; ctl.tankLeft = args.full ? TANK_FULL : clamp(args.ml | 0, 0, TANK_FULL); pushEvent(args.full ? { kind: 'refill', tankLeft: ctl.tankLeft } : { kind: 'level', tankLeft: ctl.tankLeft, prev }); } clear('tank_low'); clear('tank_reserve'); return { ok: true, tankLeft: ctl.tankLeft };
       case 'thr': p.thrPct = clamp(args.pct | 0, 1, 99); return { ok: true, ch: p.i, thrPct: p.thrPct };
       case 'dose': p.doseML = clamp(args.ml | 0, 10, 2000); return { ok: true, ch: p.i, doseML: p.doseML };
       case 'cal':
