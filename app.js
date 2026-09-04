@@ -174,6 +174,8 @@ function tankChart(h) {
   const wxd = wx ? wx.days.filter(d => d.day >= t0 && d.day < t1) : [], icons = wxd.length > 0 && dx >= 22;
   const TS = icons ? 62 : 16, P0 = TS + 4, H = 130, P1 = P0 + H, bw = dx * 0.62;
   let s = daySeps(x, t0, h.days, 0, P1);
+  const todayIn = today >= t0 && today < t1;   // today's column: a light accent band behind everything, an accent frame on top (drawn last)
+  if (todayIn) s += `<rect class="todayband" x="${x(today).toFixed(1)}" y="0" width="${dx.toFixed(1)}" height="${P1}"/>`;
   // -- top strip: temperature band (by the day average), weekday, icon, day °C over night °C
   const meas = Weather.dayNight(h.temp), dn = (d) => { const m = meas[d.day] || {}, md = m.nDay >= 8, mn = m.nNight >= 4; return { day: md ? m.tDay : d.tDay, night: mn ? m.tNight : d.tNight, mDay: md, mNight: mn }; };   // measured when at least half the hours are there
   if (icons) wxd.forEach(d => { const v = dn(d).day; if (v !== null && v !== undefined) s += `<rect class="${v < 15 ? 'tcool' : v <= 25 ? 'tmild' : 'thot'}" x="${x(d.day).toFixed(1)}" y="0" width="${dx.toFixed(1)}" height="${TS}"/>`; });
@@ -213,6 +215,7 @@ function tankChart(h) {
     s += `<circle class="now" cx="${x(now).toFixed(1)}" cy="${yT(t.tankLeft).toFixed(1)}" r="4"/><text class="lbl acc" x="${(x(now) + (right ? 7 : -7)).toFixed(1)}" y="${(yT(t.tankLeft) + 4).toFixed(1)}" text-anchor="${right ? 'start' : 'end'}">${litres(t.tankLeft)} L</text>`;
   }
   s += `<line class="grid" x1="${CPL}" x2="${CW - CPR2}" y1="${P1}" y2="${P1}"/>`;
+  if (todayIn) s += `<rect class="todayframe" x="${(x(today) + 1).toFixed(1)}" y="1" width="${(dx - 2).toFixed(1)}" height="${P1 - 2}" rx="2"/>`;
   const legend = `<div class="wxlegend"><span><svg viewBox="0 0 16 16"><rect class="wbar" x="4" y="4" width="8" height="10"/></svg>watered</span><span>·</span>${wxd.length ? `<span><svg viewBox="0 0 16 16"><rect class="rain" x="4" y="2" width="8" height="9"/></svg>rain</span><span>·</span>` : ''}<span><svg viewBox="0 0 16 16"><path class="tank" d="M1 11 L6 9 L10 10 L15 4"/></svg>tank</span><span><svg viewBox="0 0 16 16"><polygon class="refill" points="2,3 14,3 8,13"/></svg>refill</span>${wxd.length ? `<span>·</span><span>day average</span><span><svg viewBox="0 0 16 16"><rect class="tcool" x="1" y="3" width="14" height="10"/></svg>cool</span><span><svg viewBox="0 0 16 16"><rect class="tmild" x="1" y="3" width="14" height="10"/></svg>mild</span><span><svg viewBox="0 0 16 16"><rect class="thot" x="1" y="3" width="14" height="10"/></svg>hot</span><span>·</span><span>°C day over night</span>` : ''}</div>`;
   return `<div class="chead"><span class="l">Watered · L per day</span><span class="l">tank 0 – ${litres(full)} L · ${h.days} d</span></div>
   <svg viewBox="0 0 ${CW} ${P1 + 6}" role="img" aria-label="Litres watered per day, rain, tank level and weather over ${h.days} days">${s}</svg>

@@ -4,7 +4,7 @@
    moisture bars, large pot tiles with names, high-contrast state chips, 50 px buttons. Dark theme = same tokens, white on black. */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light dark;              /* the explicit Light/Dark choice below also pins the native form controls */
   --bg: #ffffff;
   --surface: #ffffff;
   --surface-2: hsl(220 6% 95%);
@@ -41,7 +41,9 @@
     --track: hsl(220 6% 18%);
   }
 }
+:root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #000000; --surface: #000000; --surface-2: hsl(220 6% 10%); --border: hsl(220 5% 72%); --border-2: hsl(220 5% 30%);
   --text: #ffffff; --text-2: hsl(220 5% 82%); --text-3: hsl(220 8% 58%);
   --accent: hsl(220 85% 66%); --accent-ink: #000000; --accent-soft: hsl(220 50% 18%);
@@ -60,6 +62,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 button, input, select { font: inherit; color: inherit; }
+select { background: var(--surface); color: var(--text); border: 2px solid var(--border); border-radius: var(--radius-s); padding: 6px 8px; max-width: 100%; }   /* also the bare selects in tables (Settings per-pot plan) */
 button { cursor: pointer; }
 a { color: var(--accent); font-weight: 700; }
 :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
@@ -277,6 +280,8 @@ td input { width: 72px; padding: 6px 6px; border: 2px solid var(--border); borde
 /* ---- weather in the Glance chart (2026-09-03): icon strip, rain/snow bands, temperature on the right axis ---- */
 .chart .wxi { fill: none; stroke: var(--text); stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; opacity: .8; }
 .chart .wxi.today { stroke-width: 2.2; opacity: 1; }
+.chart .todayband { fill: var(--accent); opacity: .10; }
+.chart .todayframe { fill: none; stroke: var(--accent); stroke-width: 2; }
 .chart .future { fill: var(--text); opacity: .05; }
 .chart .nowline { stroke: var(--text); stroke-width: 1.5; stroke-dasharray: 3 3; opacity: .6; }
 .chart .rain, .wxlegend .rain { fill: var(--wet); opacity: .5; }
