@@ -1,87 +1,77 @@
-// backend.js — the ONE interface the UI talks to. Swap the implementation here.
+// backend.js — the ONE interface the UI talks to, and the shared helpers.
 //
-// The app never imports mock.js or a Supabase client directly; it calls
-// `createBackend()` and uses the object below. To connect the real cloud:
-//   1. supabase.js implements `createSupabaseBackend(config)` with the same methods;
-//   2. set CONFIG.backend = 'supabase' and fill url + anonKey (../SETUP.md step 7).
+// createBackend() → mock.js (the fake 0.5.0 controller) · lan.js (the board on the home WiFi) · supabase.js (the cloud).
+// Every backend offers (Promises unless noted):
+//   init()                      load the first state, start polling / realtime
+//   getState()                  current State (sync) · subscribe(fn) → unsubscribe
+//   sendCommand(cmd, args)      → { status: 'acked'|'failed'|'expired'|'sent', result }  (app/SPEC.md Part 2 = the contract)
+//   setPotName(ch, name)        household pot names
+//   history(days, endOffsetDays) → { days, from, perDay:[{day, ml, n}], tank:[{ts, ml}], refills:[ts], levels:[ts] }
+//   potHistory(ch, days)        → { moisture:[{ts, pct}], doses:[{ts, ml}] }
+//   login(email, pw, stay) / logout() / session()
 //
-// Contract (all methods return Promises unless noted):
-//
-//   init()                     -> load initial state, start realtime/polling
-//   getState()                 -> current State (sync)
-//   subscribe(fn)              -> fn(state) on every change; returns unsubscribe()
-//   sendCommand(cmd, args)     -> resolves with the Command record once it is
-//                                 acked / failed / expired. Rejects only on a
-//                                 transport error (not on a refused watering —
-//                                 that is ok:false with result.reason).
-//   ackAlert(idOrAll)          -> 'all' or an alert id
-//   setHousehold(patch)        -> household-only settings (pot names, ntfy topic, weather location)
-//   history(days, endOffsetDays) -> the charts' data for a window of N days whose LAST day is today − endOffsetDays
-//                                 (0 / omitted = ending today; negative = a window reaching into the future, those
-//                                 days come back empty; the Glance chart pans with it): see History shape below
-//   potHistory(ch, days)       -> one pot's moisture history: { days, moisture:[{ts,pct}], doses:[{ts,ml}], note? }
-//   login(email, pw) / logout() / session() -> auth (mock: always logged in)
-//   isMock                     -> boolean (UI shows mock-only controls)
-//
-// State shape (field names = sketch 06 variables; ch is 0-based, pot = ch + 1):
-//   device:    { id, name, fw, ip, rssi, up, lastSeen, intervalS, havePCA }
-//   telemetry: { ts, tempC, tempOK, tankLeft, totalML, pumpRunning, pumpEn,
-//                tempEn, ledEn, autoMin, nextRoundAt (ms epoch | null when auto is off),
-//                nSensors, nServos, mlPerSec }
-//   config:    { openUs, closedUs, tankFull, tankReserve, minTempC, plausMargin,
-//                maxPumpMs }
-//   pots:      [16 × { i, raw, pct, sState, vState, todayML, air, water,
-//                      thrPct, doseML, senEn, valEn }]
-//   household: { potNames: {}, ntfyTopic, weatherLoc: {lat, lon, label} | null (null = the default in weather.js) }
-//   lastRound: { ts, watered, skipped, refused, tankLeft, tempC, trigger } | null
-//   alerts:    [{ id, ts, key, kind, severity, ch, message, active, ackedAt }]
-//   commands:  [{ id, cmd, args, status, createdAt, ackedAt, result }]  (newest first)
-//   events:    [{ id, ts, kind, ch, ... }]                                (newest first)
-//   readings:  [{ ts, tankLeft, tempC }]   (the last days of telemetry; the charts use history() instead)
-//
-// History shape (history(days, endOffsetDays)): { days, from (ms, local midnight of the window's first day), tank:[{ts,ml}] hourly, temp:[{ts,c}] hourly,
-//   perDay:[{day (ms), ml, n (doses)}] one per day, refills:[ts], partial (true when only the local ring/last days were available), note? }
+// State: { device: {id, fw, ip, rssi, up, lastSeen, intervalS}, t: <top-level board state, mapPayload>, ch: [16 channels],
+//          rules: <the plan document the board holds> | null, potNames: {ch: name}, mark: {ts, tankLeft} | null
+//          (the last refill or level set), backendDown? }
 
-// ↓↓↓ Theo: paste your two values here (Supabase → Project Settings → API), then change 'mock' to 'supabase'.
 const CONFIG = {
-  backend: 'supabase',          // 'mock' = the fake controller (double-click demo) · 'lan' = the real controller on the home WiFi (sketch 09) · 'supabase' = the cloud
-  lanHost: 'irrigation.local', // LAN mode: the controller's name or IP (override with index.html?host=192.168.1.42)
-  supabaseUrl: 'https://aghudpkgpyptlkkazxgs.supabase.co',          // e.g. 'https://abcdefghijklmnop.supabase.co'   ← "Project URL"
-  supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFnaHVkcGtncHlwdGxra2F6eGdzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MzYzMDIsImV4cCI6MjEwNDAxMjMwMn0.xuugLFhQ-qc_GFqKGrC0SBkNrEcsIJg4MrrhxmcCFrs',      // the long "anon public" key from the same page (safe in the browser: RLS limits it)
-  deviceId: 'balcony-1',    // must equal the device row in the `devices` table and `devid` on the ESP
+  backend: 'supabase',           // 'mock' · 'lan' · 'supabase'; the address bar overrides: index.html?backend=mock|lan|supabase
+  lanHost: 'irrigation.local',  // LAN mode: the controller's name or IP (or index.html?host=192.168.1.42)
+  supabaseUrl: 'https://aghudpkgpyptlkkazxgs.supabase.co',
+  supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFnaHVkcGtncHlwdGxra2F6eGdzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MzYzMDIsImV4cCI6MjEwNDAxMjMwMn0.xuugLFhQ-qc_GFqKGrC0SBkNrEcsIJg4MrrhxmcCFrs',
+  deviceId: 'balcony-1',
 };
-// The address bar can override the choice: index.html?backend=mock shows the demo even on the
-// hosted app, ?backend=supabase tries the cloud even while CONFIG still says mock, ?backend=lan talks to the controller on the home WiFi.
-// ?backend=lan only works from a page that is NOT served over https (the double-clicked file, or http://…): a browser refuses
-// http://irrigation.local from an https page (mixed content), so the hosted app never offers it (review B5).
-
-const S_STATE = { NONE: 0, OK: 1, IMPLAUSIBLE: 2, UNCAL: 3 };
-const V_STATE = { UNKNOWN: 0, CLOSED: 1, OPEN: 2, LIMP: 3 };
+// ?backend=lan only works from a page NOT served over https (a browser refuses http://irrigation.local from https).
 
 async function createBackend() {
   let which = CONFIG.backend;
   try { const q = new URLSearchParams(location.search).get('backend'); if (q === 'mock' || q === 'supabase' || q === 'lan') which = q; } catch (e) { /* ignore */ }
-  if (which === 'supabase') return createSupabaseBackend(CONFIG);   // supabase.js, loaded as a plain script before this file
-  if (which === 'lan')      return createLanBackend(CONFIG);        // lan.js — polls http://irrigation.local/api/state
+  if (which === 'supabase') return createSupabaseBackend(CONFIG);
+  if (which === 'lan') return createLanBackend(CONFIG);
   return createMockBackend(CONFIG);
 }
 
-// Helpers shared by UI and backends ------------------------------------------
+const N_CH = 16;
+const FROST_C = 3, FROST_FRESH_S = 6 * 3600;
 
-// Why the controller refused (result.reason / event.reason) in plain sentences — the one table for every backend (review B6/U2).
+// The board's state (cloud telemetry payload = LAN /api/state, same names — contract) → the app's { t, ch }.
+function mapPayload(p) {
+  p = p || {};
+  const n = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d), s = (v) => (typeof v === 'string' ? v : '');
+  const t = {
+    fw: s(p.fw), up: n(p.up, 0), mlPerSec: n(p.mlPerSec, null), maxDoseML: n(p.maxDoseML, null), maxPumpMs: n(p.maxPumpMs, null),
+    tankLeft: n(p.tankLeft, 0), tankFullML: n(p.tankFullML, null), tankReserve: n(p.tankReserve, 0),
+    pumpRunning: p.pumpRunning === true, pumpEn: p.pumpEn !== false, rulesHash: s(p.rulesHash),
+    planNext: n(p.planNext, 0) > 0 ? p.planNext * 1000 : null, planNextId: s(p.planNextId),
+    running: p.running && typeof p.running === 'object' && Number.isInteger(p.running.ch)
+      ? { plan: s(p.running.plan), ch: p.running.ch, ml: n(p.running.ml, 0), target: n(p.running.target, 0) } : null,
+    queue: Array.isArray(p.queue) ? p.queue.filter(Number.isInteger) : [],
+    frostMinC: n(p.frostMinC, null), frostAgeS: n(p.frostAgeS, null),
+  };
+  const src = Array.isArray(p.ch) ? p.ch : [], ch = [];
+  for (let i = 0; i < N_CH; i++) {
+    const c = src.find(x => x && x.i === i) || src[i] || {};
+    ch.push({ i, senEn: c.senEn === true, valEn: c.valEn === true, raw: n(c.raw, 0), pct: n(c.pct, -1), sd: n(c.sd, 0), sState: n(c.sState, 1),
+      air: n(c.air, -1), water: n(c.water, -1), soilDry: n(c.soilDry, -1), soilWet: n(c.soilWet, -1),
+      vState: n(c.vState, 0), vOpenUs: n(c.vOpenUs, null), vClosedUs: n(c.vClosedUs, null),
+      todayML: n(c.todayML, 0), lastML: n(c.lastML, 0), lastTs: n(c.lastTs, 0) > 0 ? c.lastTs * 1000 : null, lastWhy: s(c.lastWhy),
+      filling: c.filling === true });
+  }
+  return { t, ch };
+}
+// True while the forecast low blocks every dose (Addendum 1: fresh < 6 h and below 3 °C).
+function frostBlocks(t) { return t.frostMinC !== null && t.frostAgeS !== null && t.frostAgeS < FROST_FRESH_S && t.frostMinC < FROST_C; }
+
+// Reason codes → a short label (toasts, preview chips). One table for every backend.
 const REASON_TEXT = {
-  off: 'this pot is switched off or not fitted', nopca: 'the valve driver is missing, no valve can move', uncal: 'the sensor is not calibrated',
-  implausible: 'the sensor gives no believable reading — unplugged or broken', wet: 'wet enough, skipped', cold: 'too cold to water',
-  tank: 'the tank counter is at the reserve', budget: 'the daily amount for today is used up', pump_disabled: 'the pump is switched off',
-  cap: 'more than the pump can give in 90 seconds', aborted: 'stopped before it finished', bad_rules: 'the controller did not accept the watering plan',
-  no_plan: 'the controller does not have this plan — apply it first', expired: 'expired, the controller was offline', nosuch: 'no such pot',
-  busy: 'the controller is busy — try again in a moment', not_in_lan_mode: 'not available on the home WiFi', timeout: 'no answer from the controller',
-  transport: 'the controller could not be reached', unknown_cmd: 'the controller does not know this command', bad_what: 'the controller does not know this part',
+  wet: 'wet', nosensor: 'no sensor', implausible: 'sensor fault', uncal: 'not calibrated', tank: 'tank reserve', cap_trim: 'trimmed to max',
+  off: 'not fitted', nopca: 'no valve driver', too_much: 'over max', frost: 'frost', bad_rules: 'plan refused', no_plan: 'no plan',
+  budget: 'daily limit', estop: 'stopped', pump_disabled: 'pump off', badargs: 'bad value', not_recorded: 'not recorded', refused: 'refused',
+  expired: 'expired', busy: 'busy', timeout: 'no answer', transport: 'unreachable', unknown_cmd: 'unknown command', aborted: 'stopped',
 };
-function reasonText(r) { return REASON_TEXT[r] || (r ? String(r) : 'no reason given'); }
+function reasonText(r) { return REASON_TEXT[r] || (r ? String(r) : '—'); }
 
-// Local midnight of the day that contains `ms`, shifted by `k` days — via the Date constructor, so a 23 or 25 hour DST day
-// stays one day (never "midnight + k × 24 h", review B8).
+// Local midnight of the day containing ms, shifted by k days (DST-safe: never "midnight + k × 24 h").
 function dayStart(ms, k) { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), d.getDate() + (k || 0)).getTime(); }
 
 // Controller freshness from lastSeen and the telemetry interval.
@@ -93,31 +83,20 @@ function connState(device, now) {
   return 'online';
 }
 
-// The charts' data from what a backend already holds in memory (readings + events): hourly buckets and per-day sums.
-// mock.js and lan.js use it directly; supabase.js uses it as the fallback while history.sql is not installed.
-// endOffsetDays: the window's last day is today − endOffsetDays (0 = today, negative = future days, which stay empty).
+// History from what a backend holds in memory: readings [{ts, tankLeft}] + events [{ts, kind, ml, tankLeft}] (mock, LAN, cloud fallback).
 function historyFromLocal(readings, events, days, now, endOffsetDays) {
-  const from = dayStart(now, -((endOffsetDays || 0) + days - 1)), to = dayStart(from, days), buckets = new Map();
-  readings.forEach(r => {
-    if (r.ts < from || r.ts >= to) return;
-    const h = Math.floor(r.ts / 3600e3); let b = buckets.get(h); if (!b) buckets.set(h, b = { ts: h * 3600e3, ml: 0, n: 0, c: 0, nc: 0 });
-    b.ml += r.tankLeft; b.n++; if (typeof r.tempC === 'number' && Number.isFinite(r.tempC)) { b.c += r.tempC; b.nc++; }
-  });
-  const bs = [...buckets.values()].sort((a, b) => a.ts - b.ts);
+  const from = dayStart(now, -((endOffsetDays || 0) + days - 1)), to = dayStart(from, days), inWin = (ts) => ts >= from && ts < to;
   const perDay = []; for (let i = 0; i < days; i++) perDay.push({ day: dayStart(from, i), ml: 0, n: 0 });
-  const dayIdx = (ts) => { let i = days - 1; while (i > 0 && ts < perDay[i].day) i--; return i; };
-  events.forEach(e => { if (e.kind === 'dose' && e.ts >= from && e.ts < to) { const d = perDay[dayIdx(e.ts)]; d.ml += e.ml || 0; d.n++; } });
-  return { days, from, tank: bs.map(b => ({ ts: b.ts, ml: Math.round(b.ml / b.n) })), temp: bs.filter(b => b.nc).map(b => ({ ts: b.ts, c: +(b.c / b.nc).toFixed(1) })),
-    perDay, refills: events.filter(e => e.kind === 'refill' && e.ts >= from && e.ts < to).map(e => e.ts).sort((a, b) => a - b) };
+  events.forEach(e => {
+    if (e.kind !== 'dose' || !inWin(e.ts)) return;
+    let i = days - 1; while (i > 0 && e.ts < perDay[i].day) i--;
+    perDay[i].ml += e.ml || 0; perDay[i].n++;
+  });
+  const hours = new Map();
+  readings.forEach(r => { if (!inWin(r.ts)) return; const h = Math.floor(r.ts / 3600e3); const b = hours.get(h) || { s: 0, n: 0 }; b.s += r.tankLeft; b.n++; hours.set(h, b); });
+  const tank = [...hours.entries()].sort((a, b) => a[0] - b[0]).map(([h, b]) => ({ ts: h * 3600e3, ml: Math.round(b.s / b.n) }));
+  const at = (kind) => events.filter(e => e.kind === kind && inWin(e.ts)).map(e => e.ts).sort((a, b) => a - b);
+  return { days, from, perDay, tank, refills: at('refill'), levels: at('level') };
 }
 
-// Litres/day from the last 7 days of dose events; null when there is no history.
-function dailyUseML(events, now) {
-  const week = 7 * 86400e3;
-  const doses = events.filter(e => e.kind === 'dose' && now - e.ts < week);
-  if (!doses.length) return null;
-  const spanDays = Math.max(1, (now - Math.min(...doses.map(e => e.ts))) / 86400e3);
-  return doses.reduce((s, e) => s + (e.ml || 0), 0) / spanDays;
-}
-
-if (typeof module !== 'undefined') module.exports = { connState, historyFromLocal, dailyUseML, reasonText, dayStart };   // backend.test.js
+if (typeof module !== 'undefined') module.exports = { mapPayload, frostBlocks, connState, historyFromLocal, reasonText, dayStart };   // backend.test.js

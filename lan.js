@@ -1,296 +1,134 @@
-// lan.js — LAN backend: the app talks straight to the controller on the home
-// network, no cloud. Firmware side = sketches/09_irrigation (GET /api/state,
-// POST /api/cmd). Same contract as mock.js / backend.js; nothing in the UI
-// depends on this file directly.
+// lan.js — the controller on the home WiFi, no cloud (firmware 0.5.0: GET /api/state, POST /api/cmd).
+// /api/state carries the same names as the cloud telemetry (contract) plus `rules` = the stored plan document, `busy`/`queued`, `events`, so the
+// same mapPayload() (backend.js) reads both. History here starts when this tab opened (one tank reading a minute) plus
+// whatever the board's own event ring holds (`events`, if present). Pot names live in this browser (localStorage).
 //
-// Enable: CONFIG.backend = 'lan' (+ CONFIG.lanHost, default 'irrigation.local')
-// and load this file in index.html. Host fallback order: ?host=<ip> in the URL
-// → localStorage 'lanHost' → CONFIG.lanHost. If the controller does not answer
-// for a while and no host was typed yet, the app asks once for its IP (the
-// board prints it on the serial console and on the `wifi` command).
-//
-// What the controller gives us and what it does not:
-//   · polling GET /api/state every 2 s — live pots, tank, pump, temperature,
-//     auto timer, and a ring of the last 48 events (dose / refused / round /
-//     refill / estop / boot) kept in the board's RAM.
-//   · HISTORY STARTS AT POWER-UP: the 14-day chart, days-left estimate and
-//     refill list are built from that ring only, so they cover at most the time
-//     since the last reboot (and at most 48 events). No cloud = no long history.
-//     The app shows this as device.name "Balcony · LAN (history since power-up)".
-//   · alerts are derived here, in the browser, from the state and the events:
-//     tank_low (< 20 %), tank_reserve (a refused-for-tank event after the last
-//     refill), frost (< 3 °C), pot_refused (last event of a pot is a refusal for
-//     implausible / uncal / budget / nopca), estop (an estop event), offline
-//     (three missed polls). Acks live in localStorage only.
-//   · push notifications do not exist in LAN mode (household.ntfyTopic is
-//     empty); pot names are kept in localStorage.
-//
-// Command mapping (app command → the console line POSTed to /api/cmd; the
-// firmware runs it through the SAME handle() as the serial console, so pot
-// numbers are 1-based there — ch + 1):
-//   water {ch, ml?}            → w <n> [<ml>]        (ml: firmware 0.4.3 or newer; older boards ignore it and use the pot's dose)
-//   run                        → run
-//   auto {min}                 → auto <min>          (0 = off)
-//   tank {full} / {ml}         → tank full / tank <mL>
-//   thr {ch,pct}               → thr <n> <pct>
-//   dose {ch,ml}               → dose <n> <mL>
-//   cal {ch,which:'air'|'water'} → cal <n> air|water
-//   cal {ch,clear:true}        → cal clear <n>
-//   cal {ch,air,water}         → cal <n> <air> <water>
-//   en {what,on}               → en <what> on|off     (s3 · v7 · pot3 · pump · temp · led · all · sensors · valves)
-//   fit {nSensors,nServos}     → fit <sen> <srv>
-//   flow {mlPerSec}            → flow <mL/s>
-//   vlim {openUs,closedUs}     → vlim <open> <closed>
-//   v {ch,st}                  → v <n> o|c|x          vtest {ch} → vtest <n>      vall {st} → vall c|x     reseat {} → vseat
-//   p {sec}                    → p <sec>              pstop → pstop
-//   stop                       → !                    (emergency stop — acts immediately, even mid-dose)
-//   save / defaults            → save / defaults
-//   refresh                    → r                    temp → t        sweep → s
-//   hwcheck                    → i                    (output goes to the serial console, not back to the app)
-//   reboot                     → reboot
-//   rules {…} / {clear:true}   → rules <json> / rules clear   (app/RULES.md, rules v2)
-//   plan_preview {id}          → rules dry <id>      (the board prints its list on the serial console; /api/cmd cannot
-//                                 return it, so the app shows its own Rules.preview of the last /api/state — same logic)
-//   plan_run {id}              → rules run <id>      (a real round with that plan; acked on its round event)
-//   weather {rainPct,h,tMaxC}  → weather <pct> <h> <tMax>
-//   interval                   → not available in LAN mode (the app polls every 2 s) → ok:false, reason 'not_in_lan_mode'
-//
-// Result of a command: the controller answers {ok:true, queued:n} at once and
-// runs the line when its loop is free. For `water` we then wait for the dose /
-// refused event of that pot (so the toast can say "250 mL, 8.3 s" or the
-// refusal reason); for `run` we wait for the round event; everything else is
-// acked as soon as a later poll shows the queue empty.
+// App command → console line (pot n = ch + 1):
+//   valve {ch,open} → v <n> o|c          valves_all {open} → vall o|c        pump {on,sec} → p <sec> / pstop
+//   stop → !                              water {ch,ml} → w <n> <ml>           run {plan} → rules run <id>
+//   rules {…} → rules <json>              cal {ch,which} → cal <n> air|water   soil {ch,which} → soil <n> dry|wet
+//   cal_copy {ch,kind} → calcopy <n> air|soil                                  servo {ch,openUs,closedUs,all} → vpos <n>|all <o> <c>
+//   pump_test {ch,sec} → ptest <n> <sec>  flow {mlPerSec} → flow <x>           tank {full}/{ml} → tank full / tank <ml>
+//   tanksize {ml} → tanksize <ml>         en {what,on} → en s<n>|v<n> on|off   refresh → r
+// /api/cmd answers at once; when its JSON carries the ack fields they are used, otherwise the result is read from the
+// following polls (the condition per command is in done() below).
 
 function createLanBackend(config) {
-  const POLL_MS = 2000, FETCH_TIMEOUT_MS = 4000, INTERVAL_S = 5;   // connState: stale after 10 s, offline after 15 s
-  const TANK_FULL_FALLBACK = 25000, TANK_RESERVE_FALLBACK = 500, MIN_TEMP_FALLBACK = 3.0;
-  const HARD_REFUSALS = new Set(['implausible', 'uncal', 'budget', 'nopca']);
+  const POLL_MS = 2000, TIMEOUT_MS = 4000, HOST_OK = /^[\w.-]+(:\d+)?$/;
   const subs = new Set();
+  const ls = { get: (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }, set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* ignore */ } } };
   let host = config.lanHost || 'irrigation.local';
-  try { const q = new URLSearchParams(location.search).get('host'), s = localStorage.getItem('lanHost'); const ok = (h) => h && /^[\w.-]+(:\d+)?$/.test(h); host = ok(q) ? q : ok(s) ? s : host; if (ok(q)) localStorage.setItem('lanHost', q); } catch (e) { /* file:// private mode etc. */ }
-  let askedForHost = false, misses = 0, pollTimer = null, lastReadingAt = 0, seq = 0, firstPollDone = false;
-  const HOST_OK = /^[\w.-]+(:\d+)?$/;
+  try { const q = new URLSearchParams(location.search).get('host'), s = ls.get('lanHost', ''); host = HOST_OK.test(q || '') ? q : HOST_OK.test(s) ? s : host; } catch (e) { /* ignore */ }
+  const potNames = ls.get('potNames', {}), readings = [];
+  let state = { device: { id: config.deviceId, fw: '', ip: host, rssi: 0, up: 0, lastSeen: 0, intervalS: 2 }, ...mapPayload({}), rules: null, potNames, mark: null, events: [] };
 
-  const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } };
-  const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* ignore */ } };
-
-  const state = {
-    device: { id: config.deviceId, name: 'Balcony · LAN (history since power-up)', fw: '?', ip: host, rssi: 0, up: 0, lastSeen: 0, intervalS: INTERVAL_S, havePCA: false },
-    telemetry: { ts: 0, tempC: null, tempOK: false, tankLeft: 0, totalML: 0, pumpRunning: false, pumpEn: true, tempEn: true, ledEn: true, autoMin: 0, nextRoundAt: null, nSensors: 0, nServos: 0, mlPerSec: 30 },
-    config: { openUs: 2500, closedUs: 1300, tankFull: TANK_FULL_FALLBACK, tankReserve: TANK_RESERVE_FALLBACK, minTempC: MIN_TEMP_FALLBACK, plausMargin: 250, maxPumpMs: 90000, potCapML: 1800 },
-    pots: [], household: { potNames: lsGet('potNames', {}), ntfyTopic: '', weatherLoc: lsGet('weatherLoc', null) },
-    lastRound: null, alerts: [], commands: [], events: [], readings: [],
-  };
-  const acked = lsGet('lanAckedAlerts', {});        // alert key → ackedAt
-  const firstSeen = {};                              // state-derived alert key → ts
-
-  // ---------------------------------------------------------------- transport
-  function base() { return `http://${host}`; }
   async function http(path, opts) {
-    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
-    try { return await fetch(base() + path, { ...opts, signal: ctl.signal, cache: 'no-store' }); }
-    finally { clearTimeout(t); }
+    const ac = new AbortController(), t = setTimeout(() => ac.abort(), TIMEOUT_MS);
+    try { return await fetch(`http://${host}${path}`, { ...opts, signal: ac.signal, cache: 'no-store' }); } finally { clearTimeout(t); }
   }
-  async function postCmd(line) {
-    const r = await http('/api/cmd', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: line });
-    let j = null; try { j = await r.json(); } catch (e) { /* non-JSON */ }
-    if (r.status === 409) return { ok: false, reason: 'busy' };
-    if (!r.ok) throw new Error(`controller answered ${r.status}`);
-    return j || { ok: true };
+  function ingest(s, now) {
+    const m = mapPayload(s), bootMs = s.time && Number.isFinite(s.time.ms) ? now - s.time.ms : null;
+    // the board's event ring: each entry carries its time as epoch s (`t`) or as board millis (`ms`, with time.ms = millis now)
+    const evTs = (e) => (e.t > 1e9 ? e.t * 1000 : bootMs !== null && Number.isFinite(e.ms) ? bootMs + e.ms : null);
+    const events = Array.isArray(s.events) ? s.events.map(e => ({ ts: evTs(e), kind: e.kind || (e.type === 'refill' && e.note === 'set' ? 'level' : e.type),
+      ch: Number.isInteger(e.ch) ? e.ch : e.pot > 0 ? e.pot - 1 : null, ml: e.ml, tankLeft: e.tankLeft ?? e.tank })).filter(e => e.ts) : state.events;
+    const mk = events.filter(e => e.kind === 'refill' || e.kind === 'level').sort((a, b) => b.ts - a.ts)[0];
+    if (!readings.length || now - readings[readings.length - 1].ts >= 60e3) readings.push({ ts: now, tankLeft: m.t.tankLeft });
+    state = { device: { id: config.deviceId, fw: m.t.fw, ip: s.ip || (s.wifi && s.wifi.ip) || host, rssi: s.rssi || (s.wifi && s.wifi.rssi) || 0, up: m.t.up, lastSeen: now, intervalS: 2 },
+      t: m.t, ch: m.ch, rules: [s.rules, s.plan].find(x => x && typeof x === 'object') || null, potNames, mark: mk ? { ts: mk.ts, tankLeft: mk.tankLeft } : state.mark, events,
+      idle: !s.busy && !s.queued };   // busy/queued: the board's command queue (0.5.0 /api/state)
   }
-
-  // ---------------------------------------------------------------- state ← /api/state
-  function ingest(s, receivedAt) {
-    const now = receivedAt, msToTs = (ms) => now - (s.time.ms - ms);        // board millis → wall clock
-    state.device = { ...state.device, fw: s.fw, ip: s.wifi.ip || host, rssi: s.wifi.rssi, up: s.uptime_s, lastSeen: now, intervalS: INTERVAL_S, havePCA: !!s.have_pca };
-    state.telemetry = {
-      ts: now, tempC: s.temp_c, tempOK: s.temp_c !== null, tankLeft: s.tank.ml, totalML: s.tank.total_ml,
-      pumpRunning: !!s.pump.on, pumpEn: !!s.pump.enabled, tempEn: !!s.temp_en, ledEn: !!s.led_en,
-      autoMin: s.auto.minutes, nextRoundAt: s.planNext > 0 ? s.planNext * 1000 : s.auto.minutes > 0 ? msToTs(s.auto.next_ms) : null,   // planNext (epoch s, 0.4.0) wins over the auto timer
-      nSensors: s.fit.sensors, nServos: s.fit.servos, mlPerSec: s.flow_ml_s, busy: !!s.busy, queued: s.queued | 0,
-      rulesHash: typeof s.rulesHash === 'string' ? s.rulesHash : undefined,   // undefined = firmware before the watering plan
-      planNext: s.planNext > 0 ? s.planNext : 0,
-    };
-    state.config = { openUs: s.servo.open_us, closedUs: s.servo.closed_us, tankFull: s.tank.full_ml, tankReserve: s.tank.reserve_ml,
-      minTempC: s.limits.min_temp_c, plausMargin: s.limits.plaus_margin, maxPumpMs: s.limits.max_pump_ms, potCapML: s.limits.pot_cap_ml == null ? 1800 : s.limits.pot_cap_ml };
-    state.pots = s.pots.map(p => ({ i: p.n - 1, raw: p.raw, pct: p.pct, sState: p.s_state, vState: p.v_state, todayML: p.today_ml,
-      air: p.air, water: p.water, thrPct: p.thr_pct, doseML: p.dose_ml, senEn: !!p.sen_en, valEn: !!p.val_en }));
-    // events: the board sends newest first; the contract wants newest first too
-    state.events = s.events.map(e => {
-      const ev = { id: `${e.ms}:${e.type}:${e.pot}`, ts: msToTs(e.ms), kind: e.type === 'refill' && e.note === 'set' ? 'level' : e.type, ml: e.ml, tankLeft: e.tank, note: e.note };   // `tank <mL>` = a level set, not a refill
-      if (e.pot > 0) ev.ch = e.pot - 1;
-      if (e.type === 'refused') ev.reason = e.note;
-      if (e.type === 'dose') ev.sec = s.flow_ml_s > 0 ? +(e.ml / s.flow_ml_s).toFixed(1) : null;
-      if (e.type === 'round') {                                       // note = "w3 s10 r2 auto"
-        const m = /w(\d+) s(\d+) r(\d+)\s*(\w*)/.exec(e.note || '');
-        if (m) { ev.watered = +m[1]; ev.skipped = +m[2]; ev.refused = +m[3]; ev.trigger = m[4] || 'cmd'; }
-        ev.tempC = null;
-      }
-      if (e.type === 'boot') ev.fw = e.note;
-      return ev;
-    });
-    const lr = state.events.find(e => e.kind === 'round');
-    state.lastRound = lr ? { ts: lr.ts, watered: lr.watered, skipped: lr.skipped, refused: lr.refused, tankLeft: lr.tankLeft, tempC: null, trigger: lr.trigger } : null;
-    // readings for the tank sparkline: seed from the level events once, then one point a minute
-    if (!firstPollDone) {
-      firstPollDone = true;
-      state.readings = state.events.filter(e => e.kind === 'round' || e.kind === 'refill' || e.kind === 'level' || e.kind === 'boot').map(e => ({ ts: e.ts, tankLeft: e.tankLeft, tempC: null })).sort((a, b) => a.ts - b.ts);
-    }
-    if (now - lastReadingAt >= 60e3) { lastReadingAt = now; state.readings.push({ ts: now, tankLeft: s.tank.ml, tempC: s.temp_c }); if (state.readings.length > 2000) state.readings.shift(); }
-    evalAlerts(now);
-    seq++;
-  }
-
-  // ---------------------------------------------------------------- alerts (derived here, not on the board)
-  function setAlert(key, kind, severity, ch, message, ts) {
-    let a = state.alerts.find(x => x.key === key);
-    if (!a) { a = { id: key, ts, key, kind, severity, ch, message, active: true, ackedAt: acked[key] || null }; state.alerts.unshift(a); }
-    else { a.active = true; a.message = message; }
-  }
-  function clearAlert(key) { state.alerts.forEach(a => { if (a.key === key && a.active) a.active = false; }); }
-  function evalAlerts(now) {
-    const t = state.telemetry, c = state.config, evs = state.events;
-    const seen = (key) => { if (!firstSeen[key]) firstSeen[key] = now; return firstSeen[key]; };
-    // tank
-    if (t.tankLeft < c.tankFull / 5) setAlert('tank_low', 'tank_low', 'warn', null, `Tank at ${Math.round(100 * t.tankLeft / c.tankFull)} % — refill soon`, seen('tank_low'));
-    else { clearAlert('tank_low'); delete firstSeen.tank_low; }
-    const lastRefill = evs.find(e => e.kind === 'refill'), tankRefusal = evs.find(e => e.kind === 'refused' && e.reason === 'tank');
-    if (tankRefusal && (!lastRefill || tankRefusal.ts > lastRefill.ts)) setAlert(`tank_reserve:${tankRefusal.id}`, 'tank_reserve', 'critical', null, 'Tank counter at the reserve — nothing waters until you refill', tankRefusal.ts);
-    else state.alerts.forEach(a => { if (a.kind === 'tank_reserve') a.active = false; });
-    // frost
-    if (t.tempOK && t.tempC < c.minTempC) setAlert('frost', 'frost', 'info', null, `${t.tempC.toFixed(1)} °C — watering suspended below ${c.minTempC} °C`, seen('frost'));
-    else if (!t.tempOK || t.tempC > c.minTempC + 2) { clearAlert('frost'); delete firstSeen.frost; }
-    // per pot: the newest dose/refused event decides
-    state.pots.forEach(p => {
-      const last = evs.find(e => e.ch === p.i && (e.kind === 'dose' || e.kind === 'refused'));
-      const key = `pot_refused:${p.i}`;
-      if (last && last.kind === 'refused' && HARD_REFUSALS.has(last.reason)) setAlert(`${key}:${last.id}`, 'pot_refused', 'warn', p.i, `Pot ${p.i + 1} refused: ${reasonText(last.reason)}`, last.ts);
-      state.alerts.forEach(a => { if (a.kind === 'pot_refused' && a.ch === p.i && a.active && (!last || last.kind !== 'refused' || a.key !== `${key}:${last.id}`)) a.active = false; });
-    });
-    // emergency stop: one alert per estop event
-    evs.filter(e => e.kind === 'estop').forEach(e => setAlert(`estop:${e.id}`, 'estop', 'info', null, `Emergency stop received (${e.note}) — pump off, all PWM cut`, e.ts));
-    // offline is handled in poll()
-    state.alerts.sort((a, b) => b.ts - a.ts); if (state.alerts.length > 60) state.alerts.length = 60;
-  }
-
-  // ---------------------------------------------------------------- polling
-  function emit() { const s = getState(); subs.forEach(fn => fn(s)); }
-  function getState() { return JSON.parse(JSON.stringify(state)); }
+  let misses = 0, asked = false;
   async function poll() {
-    try {
-      const r = await http('/api/state', { method: 'GET' });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const s = await r.json();
-      ingest(s, Date.now());
-      misses = 0;
-      state.alerts.forEach(a => { if (a.kind === 'offline' && a.active) a.active = false; });
-    } catch (e) {
-      misses++;
-      if (misses === 3) setAlert(`offline:${Date.now()}`, 'offline', 'critical', null, `Controller not answering at ${host} — is it powered, on WiFi, and is this the right address?`, Date.now());
-      if (misses === 5 && !askedForHost) {
-        askedForHost = true;
-        const ip = typeof prompt === 'function' ? prompt(`No answer from http://${host}/ — type the controller's IP address (it prints it on the serial console, or type  wifi  there). Leave empty to keep trying.`, '') : '';
-        if (ip && HOST_OK.test(ip.trim())) { host = ip.trim(); lsSet('lanHost', host); state.device.ip = host; misses = 0; }   // a host name or IP, optional :port — nothing else (review R4)
+    try { const r = await http('/api/state'); if (!r.ok) throw new Error(r.status); ingest(await r.json(), Date.now()); misses = 0; }
+    catch (e) {
+      if (++misses === 5 && !asked && typeof prompt === 'function') {
+        asked = true; const ip = (prompt(`IP of the controller (${host} does not answer)`, '') || '').trim();
+        if (HOST_OK.test(ip)) { host = ip; ls.set('lanHost', ip); misses = 0; }
       }
     }
-    emit();
+    subs.forEach(fn => fn(state));
   }
 
-  // ---------------------------------------------------------------- commands
   const n1 = (a) => (a.ch | 0) + 1;
-  function toLine(cmd, a) {
-    a = a || {};
+  function line(cmd, a) {
     switch (cmd) {
-      case 'water': return a.ml > 0 ? `w ${n1(a)} ${a.ml | 0}` : `w ${n1(a)}`;
-      case 'run': return 'run';
-      case 'auto': return `auto ${Math.max(0, a.min | 0)}`;
-      case 'tank': return a.full ? 'tank full' : `tank ${Math.max(0, a.ml | 0)}`;
-      case 'thr': return `thr ${n1(a)} ${a.pct | 0}`;
-      case 'dose': return `dose ${n1(a)} ${a.ml | 0}`;
-      case 'cal': return a.clear ? `cal clear ${n1(a)}` : a.which ? `cal ${n1(a)} ${a.which}` : `cal ${n1(a)} ${a.air | 0} ${a.water | 0}`;
-      case 'en': return `en ${a.what} ${a.on ? 'on' : 'off'}`;
-      case 'fit': return `fit ${a.nSensors | 0} ${a.nServos | 0}`;
-      case 'flow': return `flow ${+a.mlPerSec || 30}`;
-      case 'potcap': return `potcap ${(a.ml | 0) > 0 ? a.ml | 0 : 'off'}`;
-      case 'vlim': return `vlim ${a.openUs | 0} ${a.closedUs | 0}`;
-      case 'v': return `v ${n1(a)} ${a.st}`;
-      case 'vtest': return `vtest ${n1(a)}`;
-      case 'vall': return `vall ${a.st || 'x'}`;
-      case 'reseat': return 'vseat';
-      case 'p': return `p ${a.sec | 0}`;
-      case 'pstop': return 'pstop';
+      case 'valve': return `v ${n1(a)} ${a.open ? 'o' : 'c'}`;
+      case 'valves_all': return `vall ${a.open ? 'o' : 'c'}`;
+      case 'pump': return a.on ? `p ${a.sec || 90}` : 'pstop';
       case 'stop': return '!';
-      case 'save': return 'save';
-      case 'defaults': return 'defaults';
+      case 'water': return `w ${n1(a)} ${Math.round(a.ml)}`;
+      case 'run': return `rules run ${a.plan}`;
+      case 'rules': return `rules ${JSON.stringify(a)}`;
+      case 'cal': return `cal ${n1(a)} ${a.which}`;
+      case 'soil': return `soil ${n1(a)} ${a.which}`;
+      case 'cal_copy': return `calcopy ${n1(a)} ${a.kind}`;
+      case 'servo': return `vpos ${a.all ? 'all' : n1(a)} ${a.openUs | 0} ${a.closedUs | 0}`;
+      case 'pump_test': return `ptest ${n1(a)} ${a.sec || 10}`;
+      case 'flow': return `flow ${a.mlPerSec}`;
+      case 'tank': return a.full ? 'tank full' : `tank ${Math.round(a.ml)}`;
+      case 'tanksize': return `tanksize ${Math.round(a.ml)}`;
+      case 'en': return `en ${a.what} ${a.on ? 'on' : 'off'}`;
       case 'refresh': return 'r';
-      case 'temp': return 't';
-      case 'sweep': return 's';
-      case 'hwcheck': return 'i';
-      case 'reboot': return 'reboot';
-      case 'rules': return a.clear ? 'rules clear' : `rules ${JSON.stringify(a)}`;          // app/RULES.md §2
-      case 'plan_preview': return `rules dry ${a.id}`;
-      case 'plan_run': return `rules run ${a.id}`;
-      case 'weather': return `weather ${a.rainPct | 0} ${a.h | 0} ${a.tMaxC | 0}`;
-      default: return null;                    // interval, unknown
+      default: return null;
     }
   }
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  // Wait until a poll after `since` satisfies `test(state)`; resolves with its value or null on timeout.
-  async function waitFor(test, timeoutMs) {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeoutMs) {
-      await sleep(500);
-      if (state.device.lastSeen > t0) { const v = test(); if (v) return v; }
+  // When a command counts as done, read from the polled state (before = the state when it was sent). Returns the ack result or null.
+  // sawIdle = a poll at least 1.5 s after sending showed the board's command queue empty (the line has run).
+  function done(cmd, a, before, sawPump, sawIdle) {
+    const c = state.ch[a.ch], b0 = before.ch[a.ch], idle = !state.t.pumpRunning && !state.t.running && !state.t.queue.length;
+    switch (cmd) {
+      case 'valve': return c.vState === (a.open ? 2 : 1) ? { ch: a.ch, vState: c.vState } : null;
+      case 'valves_all': return state.ch.every(x => !x.valEn || x.vState === (a.open ? 2 : 1)) ? { n: state.ch.filter(x => x.valEn).length } : null;
+      case 'water': return c.lastTs && c.lastTs !== b0.lastTs && idle ? { ch: a.ch, ml_pumped: c.lastML, ran_ms: Math.round(1000 * c.lastML / (state.t.mlPerSec || 1)) } : null;
+      case 'pump': case 'pump_test': return sawPump && idle ? { ch: a.ch, ran_ms: (a.sec || 10) * 1000, estimated: true } : null;
+      case 'run': return sawPump && idle ? {} : null;
+      case 'cal': return c.air !== b0.air || c.water !== b0.water || sawIdle ? { ch: a.ch, air: c.air, water: c.water, sd: c.sd } : null;
+      case 'soil': return c.soilDry !== b0.soilDry || c.soilWet !== b0.soilWet || sawIdle ? { ch: a.ch, soilDry: c.soilDry, soilWet: c.soilWet } : null;
+      case 'rules': return state.t.rulesHash !== before.t.rulesHash || sawIdle ? { rulesHash: state.t.rulesHash } : null;
+      default: return sawIdle ? {} : null;
     }
-    return null;
   }
-  function sendCommand(cmd, args) {
-    const rec = { id: Math.random().toString(36).slice(2, 10), cmd, args: args || {}, status: 'queued', createdAt: Date.now(), ackedAt: null, result: null, expiresAt: null };
-    state.commands.unshift(rec); if (state.commands.length > 40) state.commands.length = 40;
-    emit();
-    const finish = (status, result) => { rec.status = status; rec.result = result; rec.ackedAt = Date.now(); emit(); return { ...rec }; };
-    const line = toLine(cmd, rec.args);
-    if (!line) return Promise.resolve(finish('failed', { ok: false, reason: 'not_in_lan_mode' }));
-    return (async () => {
-      let ans;
-      try { ans = await postCmd(line); }
-      catch (e) { finish('failed', { ok: false, reason: 'transport' }); throw new Error(`${host} unreachable: ${e.message}`); }
-      if (!ans.ok) return finish('failed', ans);
-      rec.status = 'sent'; emit();
-      const sentAt = Date.now();
-      if (cmd === 'water') {
-        const ch = rec.args.ch | 0;
-        const ev = await waitFor(() => state.events.find(e => e.ch === ch && (e.kind === 'dose' || e.kind === 'refused') && e.ts >= sentAt - 1500), 150e3);
-        if (!ev) return finish('acked', { ok: true, note: 'no dose event seen — check the serial console' });
-        return ev.kind === 'dose' ? finish('acked', { ok: true, ml: ev.ml, sec: ev.sec }) : finish('failed', { ok: false, reason: ev.reason });
+  async function sendCommand(cmd, args) {
+    args = args || {};
+    const l = line(cmd, args); if (!l) return { status: 'failed', result: { ok: false, reason: 'unknown_cmd' } };
+    const before = state;
+    const r = await http('/api/cmd', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: l });
+    let j = {}; try { j = await r.json(); } catch (e) { /* not JSON */ }
+    if (!r.ok || j.ok === false) return { status: 'failed', result: { ok: false, reason: j.reason || (r.status === 409 ? 'busy' : 'transport'), ...j } };
+    if (j.result) return { status: j.result.ok === false ? 'failed' : 'acked', result: j.result };
+    if (j.queued && j.id != null) {   // 0.5.0: pumping commands are queued; their ack is read from GET /api/result?id=n
+      const t1 = Date.now();
+      while (Date.now() - t1 < 20 * 60e3) {
+        await new Promise(res => setTimeout(res, 800));
+        let q = null; try { const rr = await http('/api/result?id=' + j.id); if (rr.status === 404) break; q = await rr.json(); } catch (e) { continue; }
+        if (q && q.done) return { status: q.ok === false ? 'failed' : 'acked', result: { ok: q.ok !== false, ...(q.result || {}) } };
       }
-      if (cmd === 'run' || cmd === 'plan_run') {
-        const ev = await waitFor(() => state.events.find(e => e.kind === 'round' && e.ts >= sentAt - 1500), 20 * 60e3);
-        return finish('acked', ev ? { ok: true, watered: ev.watered, skipped: ev.skipped, refused: ev.refused, tankLeft: ev.tankLeft } : { ok: true });
-      }
-      if (cmd === 'plan_preview') return finish('acked', { ok: true, console: true });   // the list prints on the serial console; the app shows its own (rules-ui.js, same logic)
-      if (cmd === 'hwcheck') return finish('acked', { ok: true, text: 'Hardware check ran on the controller — its report is on the serial console (LAN mode cannot read it back). Live values: see the Pots and Settings screens.' });
-      // everything else: acked once the queue has drained (or after a moment, for the stop that ran immediately)
-      await waitFor(() => !state.telemetry.queued && !state.telemetry.busy, 60e3);
-      if (cmd === 'rules') return finish('acked', { ok: true, rulesHash: state.telemetry.rulesHash });   // the board's own hash, as the other backends return it
-      return finish('acked', { ok: true });
-    })();
+    }
+    const t0 = Date.now(), slow = ['water', 'pump', 'pump_test', 'run', 'valves_all'].includes(cmd); let sawPump = false, sawIdle = false;
+    while (Date.now() - t0 < (slow ? 20 * 60e3 : 30e3)) {
+      await new Promise(res => setTimeout(res, 600));
+      if (state.device.lastSeen <= t0) continue;
+      sawPump = sawPump || state.t.pumpRunning || !!state.t.running;
+      sawIdle = sawIdle || (state.idle && state.device.lastSeen > t0 + 1500);
+      const res = done(cmd, args, before, sawPump, sawIdle);
+      if (res) return { status: 'acked', result: { ok: true, ...res } };
+      if (cmd === 'water' && !sawPump && Date.now() - t0 > 8000) return { status: 'failed', result: { ok: false, reason: 'refused' } };   // no dose started: the console shows why
+    }
+    return { status: 'sent', result: null };
   }
 
   return {
-    isMock: false,
-    async init() { await poll(); pollTimer = setInterval(poll, POLL_MS); },
-    getState,
+    isMock: false, isLan: true,
+    async init() { await poll(); setInterval(poll, POLL_MS); },
+    getState: () => state,
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
     sendCommand,
-    async ackAlert(id) { const now = Date.now(); state.alerts.forEach(a => { if (id === 'all' || a.id === id) { a.ackedAt = a.ackedAt || now; acked[a.key] = a.ackedAt; } }); lsSet('lanAckedAlerts', acked); emit(); },
-    async setHousehold(patch) { Object.assign(state.household, patch); lsSet('potNames', state.household.potNames); lsSet('weatherLoc', state.household.weatherLoc); emit(); },
-    // history since power-up only (the board keeps 48 events and this tab keeps one reading a minute); moisture history needs the cloud
-    async history(days, endOffsetDays) { const h = historyFromLocal(state.readings, state.events, days, Date.now(), endOffsetDays || 0); h.partial = true; h.note = 'LAN mode: history since the controller was powered up, from this browser tab'; return h; },
-    async potHistory(ch, days) { const from = Date.now() - days * 86400e3; return { days, moisture: [], doses: state.events.filter(e => e.kind === 'dose' && e.ch === ch && e.ts >= from).map(e => ({ ts: e.ts, ml: e.ml })).sort((a, b) => a.ts - b.ts), note: 'Moisture history needs the cloud (samples table); LAN mode has only the live value.' }; },
-    async login() { return { email: 'local network' }; },
+    async setPotName(ch, name) { if (name) potNames[ch] = name; else delete potNames[ch]; ls.set('potNames', potNames); subs.forEach(fn => fn(state)); },
+    async history(days, endOffsetDays) { return historyFromLocal(readings, state.events || [], days, Date.now(), endOffsetDays || 0); },
+    async potHistory(ch, days) { const from = dayStart(Date.now(), -(days - 1)); return { moisture: [], doses: (state.events || []).filter(e => e.kind === 'dose' && e.ch === ch && e.ts >= from).map(e => ({ ts: e.ts, ml: e.ml })) }; },
+    async login() { return { email: 'lan' }; },
     async logout() {},
-    session() { return { email: 'local network' }; },   // always signed in: whoever is on the WiFi can reach the board
-    lan: { host: () => host, setHost(h) { h = String(h).trim(); if (HOST_OK.test(h)) { host = h; lsSet('lanHost', host); misses = 0; } }, stop() { clearInterval(pollTimer); } },
+    session() { return { email: 'lan' }; },
   };
 }

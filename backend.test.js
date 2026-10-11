@@ -1,5 +1,5 @@
 // backend.test.js — run with:  node app/web/backend.test.js
-// Covers the helpers in backend.js (connState, historyFromLocal, dailyUseML, reasonText, dayStart) and Weather.dayNight
+// Covers the helpers in backend.js (mapPayload, frostBlocks, connState, historyFromLocal, reasonText, dayStart) and Weather.dayNight
 // from weather.js. The DST cases pin the process to Europe/Berlin: on 2026-03-29 the clocks jump 02:00 → 03:00, so
 // that day is 23 hours long and "midnight + n × 24 h" is an hour off from the next midnight (review B8).
 'use strict';
@@ -39,6 +39,7 @@ const D = (y, m, d, h, mi) => new Date(y, m - 1, d, h || 0, mi || 0).getTime();
     { id: 2, ts: D(2026, 3, 29, 23, 30), kind: 'dose', ch: 1, ml: 900 },
     { id: 3, ts: D(2026, 3, 30, 0, 30), kind: 'dose', ch: 2, ml: 250 },    // 00:30 on the 30th: with "+ n × 24 h" this fell on the 29th
     { id: 4, ts: D(2026, 3, 30, 7, 0), kind: 'refill', tankLeft: 25000 },
+    { id: 6, ts: D(2026, 3, 29, 9, 0), kind: 'level', tankLeft: 18000 },
     { id: 5, ts: D(2026, 3, 27, 7, 0), kind: 'dose', ch: 0, ml: 250 },     // before the window
   ];
   const readings = [
@@ -50,29 +51,47 @@ const D = (y, m, d, h, mi) => new Date(y, m - 1, d, h || 0, mi || 0).getTime();
   eq('hist perDay days are local midnights', h.perDay.map(d => d.day), [D(2026, 3, 28), D(2026, 3, 29), D(2026, 3, 30)]);
   eq('hist perDay ml (DST-safe day boundaries)', h.perDay.map(d => [d.ml, d.n]), [[250, 1], [900, 1], [250, 1]]);
   eq('hist hourly tank bucket averages', h.tank, [{ ts: D(2026, 3, 29, 1), ml: 20500 }, { ts: D(2026, 3, 30, 12), ml: 25000 }]);
-  eq('hist temp buckets', h.temp, [{ ts: D(2026, 3, 29, 1), c: 5 }, { ts: D(2026, 3, 30, 12), c: 12.3 }]);
   eq('hist refills in the window', h.refills, [D(2026, 3, 30, 7)]);
+  eq('hist level sets in the window', h.levels, [D(2026, 3, 29, 9)]);
   const past = B.historyFromLocal(readings, events, 2, now, 2);          // window ending 2 days back: 27 + 28 Mar
   eq('hist endOffsetDays shifts the window', [past.from, past.perDay.map(d => d.ml)], [D(2026, 3, 27), [250, 250]]);
   const fut = B.historyFromLocal([], events, 2, now, -1);                 // 30 + 31 Mar: tomorrow stays empty
   eq('hist future day stays empty', fut.perDay.map(d => d.ml), [250, 0]);
 }
 
-// ---- dailyUseML: last 7 days of doses over the span they cover
+// ---- reasonText: short labels, unknown keys pass through
 {
-  const now = D(2026, 9, 3, 12);
-  eq('dailyUse none', B.dailyUseML([], now), null);
-  eq('dailyUse ignores older than a week', B.dailyUseML([{ kind: 'dose', ts: now - 8 * 86400e3, ml: 900 }], now), null);
-  const ev = [{ kind: 'dose', ts: now - 2 * 86400e3, ml: 900 }, { kind: 'dose', ts: now - 1 * 86400e3, ml: 300 }, { kind: 'refill', ts: now - 3600e3 }];
-  eq('dailyUse = ml over the span in days', B.dailyUseML(ev, now), 600);
-  eq('dailyUse span at least a day', B.dailyUseML([{ kind: 'dose', ts: now - 3600e3, ml: 250 }], now), 250);
+  eq('reason nosensor', B.reasonText('nosensor'), 'no sensor');
+  eq('reason frost', B.reasonText('frost'), 'frost');
+  eq('reason unknown passes through', B.reasonText('flux_capacitor'), 'flux_capacitor');
+  eq('reason empty', B.reasonText(undefined), '—');
 }
 
-// ---- reasonText: plain sentences, unknown keys pass through, nothing → "no reason given"
+// ---- mapPayload: the contract's names → the app's { t, ch }; missing fields get safe defaults
 {
-  eq('reason implausible', B.reasonText('implausible'), 'the sensor gives no believable reading — unplugged or broken');
-  eq('reason unknown passes through', B.reasonText('flux_capacitor'), 'flux_capacitor');
-  eq('reason empty', B.reasonText(undefined), 'no reason given');
+  const p = { fw: '0.5.0', up: 42, mlPerSec: 30, maxDoseML: 2700, maxPumpMs: 90000, tankLeft: 15300, tankFullML: 25000, tankReserve: 500,
+    pumpRunning: true, pumpEn: true, rulesHash: 'abcd1234', planNext: 1760000000, planNextId: 'a', running: { plan: 'a', ch: 2, ml: 450, target: 900 }, queue: [3, 'x', 5],
+    frostMinC: 1.5, frostAgeS: 600,
+    ch: [{ senEn: true, valEn: true, raw: 2268, pct: 48, sd: 9, sState: 0, air: 2744, water: 1633, soilDry: -1, soilWet: -1, vState: 1, vOpenUs: 2500, vClosedUs: 1300, todayML: 900, lastML: 900, lastTs: 1759990000, lastWhy: 'watered' }] };
+  const m = B.mapPayload(p);
+  eq('t limits', [m.t.maxDoseML, m.t.maxPumpMs, m.t.tankFullML, m.t.tankReserve], [2700, 90000, 25000, 500]);
+  eq('planNext s → ms', m.t.planNext, 1760000000000);
+  eq('running', m.t.running, { plan: 'a', ch: 2, ml: 450, target: 900 });
+  eq('queue integers only', m.t.queue, [3, 5]);
+  eq('16 channels', m.ch.length, 16);
+  eq('ch0', [m.ch[0].pct, m.ch[0].sd, m.ch[0].sState, m.ch[0].air, m.ch[0].lastTs, m.ch[0].lastWhy], [48, 9, 0, 2744, 1759990000000, 'watered']);
+  eq('missing channel = nothing fitted, no reading', [m.ch[15].senEn, m.ch[15].valEn, m.ch[15].pct, m.ch[15].sState, m.ch[15].vState], [false, false, -1, 1, 0]);
+  const e = B.mapPayload(undefined);
+  eq('empty payload', [e.t.maxDoseML, e.t.planNext, e.t.running, e.t.frostMinC, e.ch.length], [null, null, null, null, 16]);
+  eq('ch[].i wins over position', B.mapPayload({ ch: [{ i: 3, pct: 77 }] }).ch[3].pct, 77);
+}
+
+// ---- frostBlocks: fresh (< 6 h) and below 3 °C
+{
+  eq('frost blocks', B.frostBlocks({ frostMinC: 1.5, frostAgeS: 600 }), true);
+  eq('frost 3.0 does not block', B.frostBlocks({ frostMinC: 3, frostAgeS: 600 }), false);
+  eq('frost stale does not block', B.frostBlocks({ frostMinC: -2, frostAgeS: 6 * 3600 }), false);
+  eq('no frost reading', B.frostBlocks({ frostMinC: null, frostAgeS: null }), false);
 }
 
 // ---- Weather.dayNight: 06–22 = day, 22–06 = the night that FOLLOWS the day (00:00–05:59 counts for the previous day)
@@ -83,9 +102,9 @@ const D = (y, m, d, h, mi) => new Date(y, m - 1, d, h || 0, mi || 0).getTime();
     { ts: D(2026, 9, 3, 8), c: 16 }, { ts: D(2026, 9, 3, 5), c: NaN },        // day 3 Sep; NaN ignored
   ];
   const dn = Weather.dayNight(pts);
-  eq('dayNight 2 Sep', dn[D(2026, 9, 2)], { tDay: 22, nDay: 2, tNight: 12, nNight: 2 });
-  eq('dayNight 3 Sep (no night yet)', dn[D(2026, 9, 3)], { tDay: 16, nDay: 1, tNight: null, nNight: 0 });
-  eq('dayNight over the DST night', Weather.dayNight([{ ts: D(2026, 3, 29, 1), c: 2 }, { ts: D(2026, 3, 29, 4), c: 4 }])[D(2026, 3, 28)], { tDay: null, nDay: 0, tNight: 3, nNight: 2 });
+  eq('dayNight 2 Sep', dn[D(2026, 9, 2)], { tDay: 22, tNight: 12 });
+  eq('dayNight 3 Sep (no night yet)', dn[D(2026, 9, 3)], { tDay: 16, tNight: null });
+  eq('dayNight over the DST night', Weather.dayNight([{ ts: D(2026, 3, 29, 1), c: 2 }, { ts: D(2026, 3, 29, 4), c: 4 }])[D(2026, 3, 28)], { tDay: null, tNight: 3 });
 }
 
 console.log(`${pass} passed, ${fail} failed`);
