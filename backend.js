@@ -6,12 +6,13 @@
 //   getState()                  current State (sync) · subscribe(fn) → unsubscribe
 //   sendCommand(cmd, args)      → { status: 'acked'|'failed'|'expired'|'sent', result }  (app/SPEC.md Part 2 = the contract)
 //   setPotName(ch, name)        household pot names
+//   setPotLook(look)            household picture + wet level per pot, the whole map {ch: {e, wet}}
 //   history(days, endOffsetDays) → { days, from, perDay:[{day, ml, n}], tank:[{ts, ml}], refills:[ts], levels:[ts] }
 //   potHistory(ch, days)        → { moisture:[{ts, pct}], doses:[{ts, ml}] }
 //   login(email, pw, stay) / logout() / session()
 //
 // State: { device: {id, fw, ip, rssi, up, lastSeen, intervalS}, t: <top-level board state, mapPayload>, ch: [16 channels],
-//          rules: <the plan document the board holds> | null, potNames: {ch: name}, mark: {ts, tankLeft} | null
+//          rules: <the plan document the board holds> | null, potNames: {ch: name}, potLook: {ch: {e: emoji, wet: %}}, mark: {ts, tankLeft} | null
 //          (the last refill or level set), backendDown? }
 
 const CONFIG = {

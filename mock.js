@@ -82,10 +82,11 @@ function createMockBackend(config) {
   function emit() {
     const m = mapPayload(payload()), mk = [...events].reverse().find(e => e.kind === 'refill' || e.kind === 'level');
     state = { device: { id: config.deviceId, fw: b.fw, ip: '192.168.1.42', rssi: -63, up: b.up, lastSeen: Date.now(), intervalS: 300 },
-      t: m.t, ch: m.ch, rules: JSON.parse(JSON.stringify(b.rules)), potNames, mark: mk ? { ts: mk.ts, tankLeft: mk.tankLeft } : null };
+      t: m.t, ch: m.ch, rules: JSON.parse(JSON.stringify(b.rules)), potNames, potLook, mark: mk ? { ts: mk.ts, tankLeft: mk.tankLeft } : null };
     subs.forEach(fn => fn(state));
   }
   const potNames = { 0: 'Tomato L', 1: 'Tomato R', 2: 'Basil', 3: 'Mint', 4: 'Chili', 5: 'Thyme', 6: 'Lavender' };
+  let potLook = { 0: { e: '🍅' }, 1: { e: '🍅' }, 2: { e: '🌿' }, 3: { e: '🌱' }, 4: { e: '🌶️' } };
 
   // ---- valves and pump ----
   let abort = false;
@@ -211,6 +212,7 @@ function createMockBackend(config) {
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
     sendCommand,
     async setPotName(ch, name) { if (name) potNames[ch] = name; else delete potNames[ch]; emit(); },
+    async setPotLook(look) { potLook = look; emit(); },
     async history(days, endOffsetDays) { return historyFromLocal(readings, events, days, Date.now(), endOffsetDays || 0); },
     // one pot's moisture: −0.3 %/h, a jump at each dose, ending on the live value
     async potHistory(ch, days) {

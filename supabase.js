@@ -29,7 +29,7 @@ function createSupabaseBackend(config) {
     state: () => client().from('device_state').select('ts,payload').eq('device_id', id).maybeSingle(),
     config: () => client().from('device_config').select('ts,payload').eq('device_id', id).maybeSingle(),
     mark: () => client().from('events').select('ts,detail').eq('device_id', id).in('kind', ['refill', 'level']).order('ts', { ascending: false }).limit(1).maybeSingle(),
-    household: () => client().from('household').select('pot_names,weather').eq('id', 1).maybeSingle(),
+    household: () => client().from('household').select('pot_names,pot_look,weather').eq('id', 1).maybeSingle(),
   };
   const ALL = Object.keys(fetchers);
   function refresh(keys) {
@@ -46,7 +46,7 @@ function createSupabaseBackend(config) {
     state = {
       device: { id, fw: m.t.fw || d.fw || '', ip: sp.ip || d.ip || '', rssi: sp.rssi || d.rssi || 0, up: m.t.up, lastSeen: ms(d.last_seen), intervalS: d.interval_s || 300 },
       t: m.t, ch: m.ch, rules: cp.rules && typeof cp.rules === 'object' ? cp.rules : null,
-      potNames: hh.pot_names || {}, weatherLoc: hh.weather && Number.isFinite(hh.weather.lat) ? hh.weather : null,
+      potNames: hh.pot_names || {}, potLook: hh.pot_look || {}, weatherLoc: hh.weather && Number.isFinite(hh.weather.lat) ? hh.weather : null,
       mark: mk ? { ts: ms(mk.ts), tankLeft: mk.detail && mk.detail.tankLeft } : null,
     };
     try { localStorage.setItem('irrigation-state', JSON.stringify(state)); } catch (e) { /* ignore */ }
@@ -103,6 +103,11 @@ function createSupabaseBackend(config) {
     async setPotName(ch, name) {
       const names = { ...(state.potNames || {}) }; if (name) names[ch] = name; else delete names[ch];
       const { error } = await client().from('household').update({ pot_names: names }).eq('id', 1);
+      if (error) throw new Error(error.message);
+      await refresh(['household']);
+    },
+    async setPotLook(look) {
+      const { error } = await client().from('household').update({ pot_look: look }).eq('id', 1);
       if (error) throw new Error(error.message);
       await refresh(['household']);
     },

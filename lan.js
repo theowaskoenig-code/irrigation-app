@@ -20,7 +20,8 @@ function createLanBackend(config) {
   let host = config.lanHost || 'irrigation.local';
   try { const q = new URLSearchParams(location.search).get('host'), s = ls.get('lanHost', ''); host = HOST_OK.test(q || '') ? q : HOST_OK.test(s) ? s : host; } catch (e) { /* ignore */ }
   const potNames = ls.get('potNames', {}), readings = [];
-  let state = { device: { id: config.deviceId, fw: '', ip: host, rssi: 0, up: 0, lastSeen: 0, intervalS: 2 }, ...mapPayload({}), rules: null, potNames, mark: null, events: [] };
+  let potLook = ls.get('potLook', {});
+  let state = { device: { id: config.deviceId, fw: '', ip: host, rssi: 0, up: 0, lastSeen: 0, intervalS: 2 }, ...mapPayload({}), rules: null, potNames, potLook, mark: null, events: [] };
 
   async function http(path, opts) {
     const ac = new AbortController(), t = setTimeout(() => ac.abort(), TIMEOUT_MS);
@@ -35,7 +36,7 @@ function createLanBackend(config) {
     const mk = events.filter(e => e.kind === 'refill' || e.kind === 'level').sort((a, b) => b.ts - a.ts)[0];
     if (!readings.length || now - readings[readings.length - 1].ts >= 60e3) readings.push({ ts: now, tankLeft: m.t.tankLeft });
     state = { device: { id: config.deviceId, fw: m.t.fw, ip: s.ip || (s.wifi && s.wifi.ip) || host, rssi: s.rssi || (s.wifi && s.wifi.rssi) || 0, up: m.t.up, lastSeen: now, intervalS: 2 },
-      t: m.t, ch: m.ch, rules: [s.rules, s.plan].find(x => x && typeof x === 'object') || null, potNames, mark: mk ? { ts: mk.ts, tankLeft: mk.tankLeft } : state.mark, events,
+      t: m.t, ch: m.ch, rules: [s.rules, s.plan].find(x => x && typeof x === 'object') || null, potNames, potLook, mark: mk ? { ts: mk.ts, tankLeft: mk.tankLeft } : state.mark, events,
       idle: !s.busy && !s.queued };   // busy/queued: the board's command queue (0.5.0 /api/state)
   }
   let misses = 0, asked = false;
@@ -125,6 +126,7 @@ function createLanBackend(config) {
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
     sendCommand,
     async setPotName(ch, name) { if (name) potNames[ch] = name; else delete potNames[ch]; ls.set('potNames', potNames); subs.forEach(fn => fn(state)); },
+    async setPotLook(look) { potLook = look; state = { ...state, potLook }; ls.set('potLook', potLook); subs.forEach(fn => fn(state)); },
     async history(days, endOffsetDays) { return historyFromLocal(readings, state.events || [], days, Date.now(), endOffsetDays || 0); },
     async potHistory(ch, days) { const from = dayStart(Date.now(), -(days - 1)); return { moisture: [], doses: (state.events || []).filter(e => e.kind === 'dose' && e.ch === ch && e.ts >= from).map(e => ({ ts: e.ts, ml: e.ml })) }; },
     async login() { return { email: 'lan' }; },

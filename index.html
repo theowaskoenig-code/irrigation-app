@@ -8,19 +8,22 @@
 <title>Balcony</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap">
-<link rel="stylesheet" href="styles.css?v=202610111619">
+<link rel="stylesheet" href="styles.css?v=202610112247">
 </head>
 <body>
 <header class="topbar"><h1>Balcony</h1><div class="conn offline" id="conn"><span class="dot"></span><span>…</span></div></header>
 <div class="downbar" id="downbar" hidden role="status">☁ ✕</div>
 <main>
   <section class="screen active" id="screen-home"></section>
-  <section class="screen" id="screen-pots"></section>
 </main>
-<nav class="nav" aria-label="Tabs">
-  <button data-tab="home" class="active"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Home</button>
-  <button data-tab="pots"><svg viewBox="0 0 24 24"><path d="M5 9h14l-1.5 11h-11z"/><path d="M12 9V4M9 6c1 1 2 1 3 0 1 1 2 1 3 0"/></svg>Pots</button>
-</nav>
+<!-- spider tones: an emoji's shape filled with one status colour -->
+<svg class="defs" aria-hidden="true">
+  <filter id="tone-dry"><feFlood style="flood-color:var(--amber)"/><feComposite in2="SourceAlpha" operator="in"/></filter>
+  <filter id="tone-ok"><feFlood style="flood-color:var(--green)"/><feComposite in2="SourceAlpha" operator="in"/></filter>
+  <filter id="tone-wet"><feFlood style="flood-color:var(--wet)"/><feComposite in2="SourceAlpha" operator="in"/></filter>
+  <filter id="tone-run"><feFlood style="flood-color:var(--accent)"/><feComposite in2="SourceAlpha" operator="in"/></filter>
+  <filter id="tone-nos"><feFlood style="flood-color:var(--text-3)"/><feComposite in2="SourceAlpha" operator="in"/></filter>
+</svg>
 <div class="sheet" id="sheet" hidden role="dialog" aria-modal="true"></div>
 <div class="toast" id="toast" role="status"></div>
 <div class="login" id="login" hidden>
@@ -34,13 +37,13 @@
   </form>
 </div>
 <!-- plain scripts (no modules): the file opens by double-click as well as over http -->
-<script src="rules.js?v=202610111619"></script>
-<script src="weather.js?v=202610111619"></script>
-<script src="mock.js?v=202610111619"></script>
-<script src="lan.js?v=202610111619"></script>
+<script src="rules.js?v=202610112247"></script>
+<script src="weather.js?v=202610112247"></script>
+<script src="mock.js?v=202610112247"></script>
+<script src="lan.js?v=202610112247"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.114.0/dist/umd/supabase.min.js"></script>
-<script src="supabase.js?v=202610111619"></script>
-<script src="backend.js?v=202610111619"></script>
-<script src="app.js?v=202610111619"></script>
+<script src="supabase.js?v=202610112247"></script>
+<script src="backend.js?v=202610112247"></script>
+<script src="app.js?v=202610112247"></script>
 </body>
 </html>
