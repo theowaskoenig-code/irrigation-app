@@ -9,6 +9,7 @@
 //   setPotLook(look)            household picture + wet level per pot, the whole map {ch: {e, wet}}
 //   history(days, endOffsetDays) → { days, from, perDay:[{day, ml, n}], tank:[{ts, ml}], refills:[ts], levels:[ts] }
 //   potHistory(ch, days)        → { moisture:[{ts, pct}], doses:[{ts, ml}] }
+//   runs(days)                  → plan rounds, newest first: [{ts, plan, trigger, watered, skipped, refused, ml, tankLeft, pots:[{ch, ml, pct, why}]}]
 //   login(email, pw, stay) / logout() / session()
 //
 // State: { device: {id, fw, ip, rssi, up, lastSeen, intervalS}, t: <top-level board state, mapPayload>, ch: [16 channels],
@@ -100,4 +101,25 @@ function historyFromLocal(readings, events, days, now, endOffsetDays) {
   return { days, from, perDay, tank, refills: at('refill'), levels: at('level') };
 }
 
-if (typeof module !== 'undefined') module.exports = { mapPayload, frostBlocks, connState, historyFromLocal, reasonText, dayStart };   // backend.test.js
+// Plan rounds from events [{ts, kind, ch, ml, pct, reason, plan, trigger, watered, skipped, refused, tankLeft}] (any order).
+// The board posts one `round` event at the END of a round; its pots are the plan doses (dose with a plan) and the
+// refused events since the previous round, at most RUN_WIN before it. Skipped pots (wet, not fitted, no sensor, frost) carry no event → count only.
+const RUN_WIN = 15 * 60e3;
+function runsFromEvents(events, from) {
+  const ev = events.filter(e => e && e.ts).sort((a, b) => a.ts - b.ts), runs = [];
+  let prev = -Infinity;
+  ev.forEach(e => {
+    if (e.kind !== 'round') return;
+    const lo = Math.max(prev, e.ts - RUN_WIN), win = ev.filter(x => x.ts > lo && x.ts <= e.ts);
+    const doses = win.filter(x => x.kind === 'dose' && x.plan).map(x => ({ ch: x.ch, ml: x.ml || 0, pct: Number.isFinite(x.pct) ? x.pct : null, why: x.trimmed ? 'cap_trim' : 'ok' }));
+    const nRef = e.refused || 0, refs = (nRef ? win.filter(x => x.kind === 'refused' && Number.isInteger(x.ch)).slice(-nRef) : [])
+      .map(x => ({ ch: x.ch, ml: 0, pct: Number.isFinite(x.pct) && x.pct >= 0 ? x.pct : null, why: x.reason || 'refused' }));
+    prev = e.ts;
+    if (e.ts < (from || 0)) return;
+    runs.push({ ts: e.ts, plan: e.plan || '', trigger: e.trigger || '', watered: e.watered || 0, skipped: e.skipped || 0, refused: e.refused || 0,
+      ml: doses.reduce((a, d) => a + d.ml, 0), tankLeft: Number.isFinite(e.tankLeft) ? e.tankLeft : null, pots: doses.concat(refs).sort((a, b) => a.ch - b.ch) });
+  });
+  return runs.reverse();
+}
+
+if (typeof module !== 'undefined') module.exports = { mapPayload, frostBlocks, connState, historyFromLocal, runsFromEvents, reasonText, dayStart };   // backend.test.js

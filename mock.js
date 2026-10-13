@@ -55,7 +55,9 @@ function createMockBackend(config) {
         if (level < 9000) { level = 25000; events.push({ ts: ts - 2 * 3600e3, kind: 'refill', tankLeft: level }); }
         if (d === 12 && slot === 0) { level -= 800; events.push({ ts: ts - 3600e3, kind: 'level', tankLeft: level }); }
         const pots = [(d * 2 + slot) % 6]; if (d % 3 === 0 && slot === 0) pots.push((d + 3) % 6);
-        pots.forEach((ch, k) => { level -= 900; events.push({ ts: ts + k * 40e3, kind: 'dose', ch, ml: 900, tankLeft: level }); });
+        pots.forEach((ch, k) => { level -= 900; events.push({ ts: ts + k * 40e3, kind: 'dose', ch, ml: 900, tankLeft: level, plan: 'a', pct: 30 + (d * 7 + ch) % 15 }); });
+        const ref = d % 7 === 0 && slot === 1; if (ref) events.push({ ts: ts + pots.length * 40e3, kind: 'refused', ch: 5, reason: 'implausible' });
+        events.push({ ts: ts + pots.length * 40e3 + 30e3, kind: 'round', plan: 'a', trigger: 'plan', watered: pots.length, skipped: 4 - pots.length, refused: ref ? 1 : 0, tankLeft: level });
       });
     }
     events.sort((x, y) => x.ts - y.ts);
@@ -110,7 +112,7 @@ function createMockBackend(config) {
     const pumped = Math.round(ran / 1000 * b.mlPerSec), stopped = abort;
     b.running = null; if (!stopped) await moveValve(ch, false);      // an e-stop sends no close pulse: the valve stays as it is (state unknown)
     b.tankLeft = Math.max(0, b.tankLeft - pumped); c.todayML += pumped; c.lastML = pumped; c.lastTs = Date.now(); c._true = Math.min(95, c._true + pumped / 20);
-    if (pumped) pushEvent({ kind: 'dose', ch, ml: pumped, tankLeft: b.tankLeft });
+    if (pumped) pushEvent({ kind: 'dose', ch, ml: pumped, tankLeft: b.tankLeft, plan: plan || '', pct: c.pct });
     emit();
     return stopped ? { ok: false, reason: 'aborted', ch, ml_pumped: pumped, ran_ms: ran } : { ok: true, ch, ml_pumped: pumped, ran_ms: ran };
   }
@@ -127,9 +129,10 @@ function createMockBackend(config) {
       c.lastWhy = d.why; c.filling = d.filling;
       b.queue = b.queue.filter(x => x !== item.ch);
       if (d.action === 'water') { const r = await dose(item.ch, d.ml, planId); watered++; if (!r.ok) break; }
-      else if (d.why === 'wet') skipped++; else refused++;
+      else if (['wet', 'off', 'nosensor', 'frost'].includes(d.why)) skipped++;     // as the board: these are skips, the rest is refused + an event
+      else { refused++; pushEvent({ kind: 'refused', ch: item.ch, reason: d.why, pct: c.pct }); }
     }
-    b.queue = []; pushEvent({ kind: 'round', plan: planId, watered, skipped, refused }); emit();
+    b.queue = []; pushEvent({ kind: 'round', plan: planId, trigger: 'cmd', watered, skipped, refused, tankLeft: b.tankLeft }); emit();
     return abort ? { ok: false, reason: 'aborted', watered, skipped, refused } : { ok: true, watered, skipped, refused };
   }
 
@@ -215,6 +218,7 @@ function createMockBackend(config) {
     async setPotLook(look) { potLook = look; emit(); },
     async history(days, endOffsetDays) { return historyFromLocal(readings, events, days, Date.now(), endOffsetDays || 0); },
     // one pot's moisture: −0.3 %/h, a jump at each dose, ending on the live value
+    async runs(days) { return runsFromEvents(events, dayStart(Date.now(), -(days - 1))); },
     async potHistory(ch, days) {
       const now = Date.now(), from = dayStart(now, -(days - 1)), c = chs[ch];
       const doses = events.filter(e => e.kind === 'dose' && e.ch === ch && e.ts >= from).map(e => ({ ts: e.ts, ml: e.ml }));

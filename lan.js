@@ -27,12 +27,20 @@ function createLanBackend(config) {
     const ac = new AbortController(), t = setTimeout(() => ac.abort(), TIMEOUT_MS);
     try { return await fetch(`http://${host}${path}`, { ...opts, signal: ac.signal, cache: 'no-store' }); } finally { clearTimeout(t); }
   }
+  // the ring keeps a round's counts, a dose's source and a refusal's reason in `note` ("w2 s1 r0 plan a" · "plan"|"cap_trim"|"manual" · "tank")
+  function ringNote(e) {
+    const n = typeof e.note === 'string' ? e.note : '';
+    if (e.type === 'round') { const m = /^w(\d+) s(\d+) r(\d+) (\S+)(?: (\w))?/.exec(n); return m ? { watered: +m[1], skipped: +m[2], refused: +m[3], trigger: m[4], plan: m[5] || '' } : {}; }
+    if (e.type === 'dose') return n === 'manual' ? {} : { plan: n, trimmed: n === 'cap_trim' };   // plan id unknown here; any non-manual dose belongs to a round
+    if (e.type === 'refused') return { reason: n };
+    return {};
+  }
   function ingest(s, now) {
     const m = mapPayload(s), bootMs = s.time && Number.isFinite(s.time.ms) ? now - s.time.ms : null;
     // the board's event ring: each entry carries its time as epoch s (`t`) or as board millis (`ms`, with time.ms = millis now)
     const evTs = (e) => (e.t > 1e9 ? e.t * 1000 : bootMs !== null && Number.isFinite(e.ms) ? bootMs + e.ms : null);
     const events = Array.isArray(s.events) ? s.events.map(e => ({ ts: evTs(e), kind: e.kind || (e.type === 'refill' && e.note === 'set' ? 'level' : e.type),
-      ch: Number.isInteger(e.ch) ? e.ch : e.pot > 0 ? e.pot - 1 : null, ml: e.ml, tankLeft: e.tankLeft ?? e.tank })).filter(e => e.ts) : state.events;
+      ch: Number.isInteger(e.ch) ? e.ch : e.pot > 0 ? e.pot - 1 : null, ml: e.ml, tankLeft: e.tankLeft ?? e.tank, ...ringNote(e) })).filter(e => e.ts) : state.events;
     const mk = events.filter(e => e.kind === 'refill' || e.kind === 'level').sort((a, b) => b.ts - a.ts)[0];
     if (!readings.length || now - readings[readings.length - 1].ts >= 60e3) readings.push({ ts: now, tankLeft: m.t.tankLeft });
     state = { device: { id: config.deviceId, fw: m.t.fw, ip: s.ip || (s.wifi && s.wifi.ip) || host, rssi: s.rssi || (s.wifi && s.wifi.rssi) || 0, up: m.t.up, lastSeen: now, intervalS: 2 },
@@ -128,6 +136,7 @@ function createLanBackend(config) {
     async setPotName(ch, name) { if (name) potNames[ch] = name; else delete potNames[ch]; ls.set('potNames', potNames); subs.forEach(fn => fn(state)); },
     async setPotLook(look) { potLook = look; state = { ...state, potLook }; ls.set('potLook', potLook); subs.forEach(fn => fn(state)); },
     async history(days, endOffsetDays) { return historyFromLocal(readings, state.events || [], days, Date.now(), endOffsetDays || 0); },
+    async runs(days) { return runsFromEvents(state.events || [], dayStart(Date.now(), -(days - 1))); },
     async potHistory(ch, days) { const from = dayStart(Date.now(), -(days - 1)); return { moisture: [], doses: (state.events || []).filter(e => e.kind === 'dose' && e.ch === ch && e.ts >= from).map(e => ({ ts: e.ts, ml: e.ml })) }; },
     async login() { return { email: 'lan' }; },
     async logout() {},

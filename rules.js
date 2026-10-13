@@ -113,7 +113,7 @@ function triggersBetween(rules, fromMs, toMs) {
 function nextTrigger(rules, nowMs) { const t = triggersBetween(rules, nowMs, nowMs + 2 * 86400e3); return t.length ? t[0] : null; }
 
 // ---------------------------------------------------------------- the per-pot decision (firmware 0.5.0 order)
-// sensorWhy(c) → null when the sensor gives a working reading, else the reason a plan must not water this pot.
+// sensorWhy(c) → null when the sensor gives a working reading, else why it does not (a plan then waters the pot blind).
 function sensorWhy(c) {
   if (!c.senEn) return 'nosensor';
   if (c.sState === 1) return 'nosensor';
@@ -128,13 +128,16 @@ function sensorWhy(c) {
 function decide(plan, c, ctx) {
   const was = !!c.filling, skip = (why, filling) => ({ action: 'skip', why, filling: filling === undefined ? was : filling });
   if (!c.valEn) return skip('off');
-  const sw = sensorWhy(c); if (sw) return skip(sw);
-  let filling = false;
-  if (plan.mode === 'min') { if (!(c.pct < plan.thr)) return skip('wet', false); }
-  else if (plan.mode === 'max') { if (c.pct > plan.thr) return skip('wet', false); }
-  else {
-    if (was ? c.pct >= plan.max : c.pct >= plan.min) return skip('wet', false);
-    filling = true;
+  // no working sensor → no moisture check: the plan's dose every round (Theo 2026-10-13, firmware 0.5.1)
+  let filling = was;
+  if (!sensorWhy(c)) {
+    filling = false;
+    if (plan.mode === 'min') { if (!(c.pct < plan.thr)) return skip('wet', false); }
+    else if (plan.mode === 'max') { if (c.pct > plan.thr) return skip('wet', false); }
+    else {
+      if (was ? c.pct >= plan.max : c.pct >= plan.min) return skip('wet', false);
+      filling = true;
+    }
   }
   if (ctx.frost) return skip('frost');
   let ml = plan.dose, why = 'watered';

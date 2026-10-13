@@ -127,6 +127,14 @@ function createSupabaseBackend(config) {
       return { days, from, perDay, tank: (rd.data || []).filter(r => r.tank_ml !== null).map(r => ({ ts: ms(r.ts), ml: r.tank_ml })),
         refills: evs.filter(e => e.kind === 'refill').map(e => ms(e.ts)), levels: evs.filter(e => e.kind === 'level').map(e => ms(e.ts)) };
     },
+    // plan rounds: round + dose + refused events (newest 2000), grouped by runsFromEvents
+    async runs(days) {
+      const from = dayStart(Date.now(), -(days - 1));
+      const { data, error } = await client().from('events').select('ts,kind,ch,detail').eq('device_id', id).in('kind', ['round', 'dose', 'refused'])
+        .gte('ts', new Date(from - RUN_WIN).toISOString()).order('ts', { ascending: false }).limit(2000);
+      if (error) throw new Error(error.message);
+      return runsFromEvents((data || []).map(r => ({ ...(r.detail || {}), ts: ms(r.ts), kind: r.kind, ch: r.ch })), from);
+    },
     async potHistory(ch, days) {
       const c = client();
       const [mo, ev] = await Promise.all([

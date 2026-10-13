@@ -96,10 +96,13 @@ eq('range below min → start filling', R.decide(range, C({ pct: 30 }), X), { ac
 eq('range filling between → keep watering', R.decide(range, C({ pct: 50, filling: true }), X), { action: 'water', why: 'watered', ml: 250, filling: true });
 eq('range filling reaches max → stop', R.decide(range, C({ pct: 60, filling: true }), X), { action: 'skip', why: 'wet', filling: false });
 eq('valve not fitted', R.decide(min, C({ valEn: false }), X).why, 'off');
-eq('sensor not fitted', R.decide(min, C({ senEn: false }), X).why, 'nosensor');
-eq('sensor swims', R.decide(max, C({ sState: 1, pct: -1 }), X).why, 'nosensor');
-eq('implausible', R.decide(max, C({ sState: 2 }), X).why, 'implausible');
-eq('uncalibrated', R.decide(max, C({ sState: 3 }), X).why, 'uncal');
+// no working sensor → the plan's dose every round, no moisture check (2026-10-13)
+eq('sensor not fitted → water', R.decide(min, C({ senEn: false, pct: 80 }), X), { action: 'water', why: 'watered', ml: 900, filling: false });
+eq('sensor swims → water', R.decide(max, C({ sState: 1, pct: -1 }), X).action, 'water');
+eq('implausible → water', R.decide(max, C({ sState: 2, pct: 99 }), X).action, 'water');
+eq('uncalibrated → water', R.decide(max, C({ sState: 3 }), X).action, 'water');
+eq('no sensor still stops on frost', R.decide(min, C({ senEn: false }), { ...X, frost: true }).why, 'frost');
+eq('no sensor still keeps the tank reserve', R.decide(min, C({ senEn: false }), { ...X, tankLeft: 1300 }).why, 'tank');
 eq('no sensor keeps filling flag', R.decide(range, C({ sState: 1, filling: true }), X).filling, true);
 eq('cap trim', R.decide({ ...min, dose: 3000 }, C(), X), { action: 'water', why: 'cap_trim', ml: 2700, filling: false });
 eq('tank reserve', R.decide(min, C(), { ...X, tankLeft: 1300 }).why, 'tank');
@@ -110,7 +113,7 @@ eq('frost does not hide wet', R.decide(min, C({ pct: 80 }), { ...X, frost: true 
 {
   const chs = []; for (let i = 0; i < 16; i++) chs.push(C({ pct: [30, 60, 20][i] ?? 50, valEn: i < 7, senEn: i !== 5 }));
   const pv = R.preview(DOC, 'a', chs, { ...X, tankLeft: 2000 });
-  eq('preview a', pv.map(x => [x.ch, x.action, x.why]), [[0, 'water', 'watered'], [1, 'skip', 'wet'], [2, 'skip', 'tank'], [3, 'skip', 'wet'], [4, 'skip', 'wet'], [5, 'skip', 'nosensor']]);
+  eq('preview a', pv.map(x => [x.ch, x.action, x.why]), [[0, 'water', 'watered'], [1, 'skip', 'wet'], [2, 'skip', 'tank'], [3, 'skip', 'wet'], [4, 'skip', 'wet'], [5, 'skip', 'tank']]);   // pot 6 has no sensor: it would be watered, but the tank is at its reserve
   eq('preview b (off plan still previews)', R.preview(DOC, 'b', chs, X).map(x => x.ch), [6]);
   eq('preview unknown', R.preview(DOC, 'z', chs, X), []);
 }

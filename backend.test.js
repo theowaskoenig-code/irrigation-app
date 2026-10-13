@@ -1,5 +1,5 @@
 // backend.test.js — run with:  node app/web/backend.test.js
-// Covers the helpers in backend.js (mapPayload, frostBlocks, connState, historyFromLocal, reasonText, dayStart) and Weather.dayNight
+// Covers the helpers in backend.js (mapPayload, frostBlocks, connState, historyFromLocal, runsFromEvents, reasonText, dayStart) and Weather.dayNight
 // from weather.js. The DST cases pin the process to Europe/Berlin: on 2026-03-29 the clocks jump 02:00 → 03:00, so
 // that day is 23 hours long and "midnight + n × 24 h" is an hour off from the next midnight (review B8).
 'use strict';
@@ -105,6 +105,25 @@ const D = (y, m, d, h, mi) => new Date(y, m - 1, d, h || 0, mi || 0).getTime();
   eq('dayNight 2 Sep', dn[D(2026, 9, 2)], { tDay: 22, tNight: 12 });
   eq('dayNight 3 Sep (no night yet)', dn[D(2026, 9, 3)], { tDay: 16, tNight: null });
   eq('dayNight over the DST night', Weather.dayNight([{ ts: D(2026, 3, 29, 1), c: 2 }, { ts: D(2026, 3, 29, 4), c: 4 }])[D(2026, 3, 28)], { tDay: null, tNight: 3 });
+}
+
+// ---- runsFromEvents: plan doses + refused events before each round event; a manual dose and an older round stay out
+{
+  const T = D(2026, 10, 13, 7), m = 60e3;
+  const ev = [
+    { ts: T - 12 * 3600e3, kind: 'round', plan: 'a', trigger: 'plan', watered: 0, skipped: 16, refused: 0, tankLeft: 9000 },
+    { ts: T - 30 * m, kind: 'dose', ch: 9, ml: 500 },                                  // manual: no plan → not part of the round
+    { ts: T + 0.5 * m, kind: 'dose', ch: 0, ml: 529, pct: 40, plan: 'a' },
+    { ts: T + 1 * m, kind: 'dose', ch: 3, ml: 2700, pct: 82, plan: 'a', trimmed: true },
+    { ts: T + 1.1 * m, kind: 'refused', ch: 1, pct: -1, reason: 'tank' },
+    { ts: T + 1.5 * m, kind: 'round', plan: 'a', trigger: 'plan', watered: 2, skipped: 13, refused: 1, tankLeft: 5771 },
+  ];
+  const r = B.runsFromEvents(ev, 0);
+  eq('runs newest first', r.map(x => x.watered), [2, 0]);
+  eq('run total mL', r[0].ml, 3229);
+  eq('run pots by channel', r[0].pots, [{ ch: 0, ml: 529, pct: 40, why: 'ok' }, { ch: 1, ml: 0, pct: null, why: 'tank' }, { ch: 3, ml: 2700, pct: 82, why: 'cap_trim' }]);
+  eq('older round has no pots', r[1].pots, []);
+  eq('from cuts older rounds', B.runsFromEvents(ev, T).length, 1);
 }
 
 console.log(`${pass} passed, ${fail} failed`);

@@ -154,6 +154,13 @@ function banner() {
   const on = Rules.isOn(b.plan);
   return `<button class="banner" data-a="plans"><b>${esc(b.plan.name)}</b><span class="chip ${on ? 'ok' : 'nos'}">${on ? 'on' : 'off'}</span>${b.at ? `<span>next ${whenLabel(b.at)}</span>` : ''}${frost}<span class="sp"></span><span aria-hidden="true">›</span></button>`;
 }
+// Last plan round: when · pots watered · litres · refused (tap → Runs sheet)
+const RUN_DAYS = 30, runsHist = () => hist('runs', () => backend.runs(RUN_DAYS));
+function lastRunBanner() {
+  const rs = runsHist(), r = rs && rs[0];
+  if (!r) return `<button class="banner last" data-a="runs"><b>Last run</b><span class="faint">—</span><span class="sp"></span><span aria-hidden="true">›</span></button>`;
+  return `<button class="banner last" data-a="runs"><b>Last run</b><span>${whenLabel(r.ts)}</span><span>💧 ${r.watered}</span><span>${litres(r.ml)} L</span>${r.refused ? `<span class="chip bad">✕ ${r.refused}</span>` : ''}<span class="sp"></span><span aria-hidden="true">›</span></button>`;
+}
 function spiderSvg() {
   const R0 = 42, RN = 118, RL = 145, E = RL + 66, t = state.t;
   let lines = '', nodes = '';
@@ -178,7 +185,7 @@ function spiderSvg() {
 function stationCard() {
   const t = state.t, r = t.running, act = active(), b = bannerPlan();
   const run = r ? `<div class="row"><b>${potLabel(r.ch)}</b><span class="sp"></span><span>${r.ml} / ${r.target} mL</span></div><div class="mbar"><i style="width:${r.target ? Math.min(100, 100 * r.ml / r.target) : 0}%;background:var(--accent)"></i></div>` : '';
-  return `<div class="card${act ? ' running' : ''}">${banner()}${run}${spiderSvg()}
+  return `<div class="card${act ? ' running' : ''}">${banner()}${lastRunBanner()}${run}${spiderSvg()}
   <div class="btns"><button class="btn primary" data-a="run-ask" ${!b || busy.has('run') || t.running ? 'disabled' : ''}>▶ Run now</button>${act ? '<button class="btn stop" data-a="stop">■ STOP</button>' : ''}</div>
   <div class="btns"><button class="btn sm" data-a="vall" data-v="1"${dis('valves_all')}>Open all</button><button class="btn sm" data-a="vall" data-v="0"${dis('valves_all')}>Close all</button>${t.pumpRunning ? `<button class="btn sm on" data-a="pump" data-v="0"${dis('pumpoff')}>Pump off</button>` : `<button class="btn sm" data-a="pump" data-v="1"${dis('pump')}>Pump on</button>`}</div>
   <div class="legend"><span><span class="dot" style="background:var(--amber)"></span>dry</span><span><span class="dot" style="background:var(--green)"></span>ok</span><span><span class="dot" style="background:var(--wet)"></span>wet</span><span><span class="dot" style="background:var(--accent)"></span>watering</span><span><span class="dot" style="background:var(--text-3)"></span>no sensor</span></div></div>`;
@@ -284,13 +291,21 @@ function dayLine(times) {
   times.forEach(tm => { const X = (+tm.slice(0, 2) + +tm.slice(3) / 60) / 24 * w; s += `<g data-a="t-del" data-t="${tm}" role="button" aria-label="remove ${tm}"><circle cx="${X}" cy="23" r="13" fill="transparent"/><circle cx="${X}" cy="23" r="8" fill="var(--accent)"/><text x="${X}" y="11" text-anchor="middle" font-size="10.5" font-weight="700" fill="var(--text)">${tm}</text></g>`; });
   return `<svg class="dayline" data-a="t-add" viewBox="-10 0 ${w + 20} 50" width="100%" role="img" aria-label="times">${s}</svg>`;
 }
-function bandSvg(p) {
-  const W = 320, X = (v) => 4 + v / 100 * (W - 8), r = (a, b, f, o) => `<rect x="${X(a)}" y="8" width="${Math.max(0, X(b) - X(a))}" height="16" fill="${f}" ${o ? `opacity="${o}"` : ''}/>`;
-  let s = p.mode === 'min' ? r(0, p.thr, 'var(--accent)', '.85') + r(p.thr, 100, 'var(--track)') : p.mode === 'max' ? r(0, p.thr, 'var(--accent)', '.85') + r(p.thr, 100, 'var(--red-soft)')
-    : r(0, p.min, 'var(--accent)') + r(p.min, p.max, 'var(--accent)', '.35') + r(p.max, 100, 'var(--red-soft)');
-  [0, 50, 100].forEach(v => { s += `<text x="${Math.min(W - 12, Math.max(10, X(v)))}" y="38" text-anchor="middle" font-size="10" fill="var(--text-3)">${v} %</text>`; });
-  return `<svg viewBox="0 -4 ${W} 46" width="100%" role="img" aria-label="moisture">${s}<text x="4" y="4" font-size="9.5" fill="var(--text-3)">dry</text><text x="${W - 4}" y="4" text-anchor="end" font-size="9.5" fill="var(--text-3)">wet</text></svg>`;
+// Moisture line, drawn like the day line: one knob = Min/Max level, two knobs = Range. Drag a knob; tap the line to add the
+// second knob (→ Range) or, in Range, to move the nearest one there; tap a Range knob to remove it (→ back to Min/Max).
+const MW = 320, mX = (v) => v / 100 * MW;
+function moistLine(p) {
+  const rng = p.mode === 'range', bar = (a, b, o) => `<rect x="${mX(a)}" y="18" width="${Math.max(0, mX(b) - mX(a))}" height="10" rx="5" fill="var(--accent)" opacity="${o}"/>`;
+  let s = `<rect x="0" y="18" width="${MW}" height="10" rx="5" fill="var(--track)"/>` + (rng ? bar(0, p.max, '.35') + bar(0, p.min, '.85') : bar(0, p.thr, '.85'));
+  [0, 25, 50, 75, 100].forEach(v => { s += `<text x="${Math.min(MW - 8, Math.max(8, mX(v)))}" y="46" text-anchor="middle" font-size="10" fill="var(--text-3)">${v}</text>`; });
+  const close = rng && p.max - p.min < 16, knob = (k, v, anchor) => `<g data-a="m-knob" data-k="${k}" role="button" aria-label="${k} ${v} %"><circle cx="${mX(v)}" cy="23" r="16" fill="transparent"/><circle cx="${mX(v)}" cy="23" r="8" fill="var(--accent)"/><text x="${Math.min(MW + 6, Math.max(-6, mX(v) + (anchor === 'end' ? 4 : anchor === 'start' ? -4 : 0)))}" y="11" text-anchor="${anchor}" font-size="10.5" font-weight="700" fill="var(--text)">${v} %</text></g>`;
+  s += rng ? knob('min', p.min, close ? 'end' : 'middle') + knob('max', p.max, close ? 'start' : 'middle') : knob('thr', p.thr, 'middle');
+  return `<svg class="mline" data-a="m-add" viewBox="-10 0 ${MW + 20} 50" width="100%" role="img" aria-label="moisture">${s}</svg>`;
 }
+// What the setting does, in a few words
+const moistText = (p) => (p.mode === 'min' ? `💧 if drier than ${p.thr} %` : p.mode === 'max' ? `💧 unless wetter than ${p.thr} %` : `💧 from below ${p.min} % up to ${p.max} %`);
+const mVal = (e) => { const r = $('#mline svg').getBoundingClientRect(); return Math.round(Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width * (MW + 20) - 10) / MW * 100))); };
+function drawMoist(p) { $('#mline').innerHTML = moistLine(p); const t = $('#mtext'); if (t) t.textContent = moistText(p); }
 const PV_ICON = { wet: '●', nosensor: '⚠', implausible: '✕', uncal: '?', tank: '▮', frost: '❄', off: '—' };
 function previewRow(items) {
   if (!items.length) return '<div class="pv"><span>—</span></div>';
@@ -298,15 +313,12 @@ function previewRow(items) {
 }
 function planEditor() {
   const d = sheet.draft, p = Rules.planById(d, sheet.edit), max = state.t.maxDoseML, isDef = d.default === p.id;
-  const lvl = p.mode !== 'range';
-  const slider = lvl ? `<div class="row"><div class="seg" style="width:150px"><button data-a="mode" data-v="min" aria-pressed="${p.mode === 'min'}">Min</button><button data-a="mode" data-v="max" aria-pressed="${p.mode === 'max'}">Max</button></div><span class="sp"></span><span class="big" id="dryv">${p.thr}<small> %</small></span></div><input type="range" id="thr" min="0" max="100" value="${p.thr}" aria-label="moisture">`
-    : `<div class="row"><span class="sp"></span><span class="big" id="dryv">${p.min}–${p.max}<small> %</small></span></div><div class="dual"><input type="range" id="rmin" min="0" max="100" value="${p.min}" aria-label="min"><input type="range" id="rmax" min="0" max="100" value="${p.max}" aria-label="max"></div>`;
   const chips = state.ch.map((c, ch) => (c.valEn ? `<button data-a="tpot" data-ch="${ch}" class="${Rules.potPlanId(d, ch) === p.id ? 'on' : ''}">${ch + 1} ${esc(potName(ch))}${Rules.sensorWhy(c) ? ' <span class="warn" title="no sensor">⚠</span>' : ''}</button>` : '')).join('');
   return `<div class="head"><button class="btn sm" data-a="plan-back" aria-label="back">◀</button><span class="cap">Plan</span><button class="btn sm" data-a="close" aria-label="close">✕</button></div>
   <div class="row"><input class="inline-edit name" id="pname" value="${esc(p.name)}" maxlength="16" aria-label="name"><button class="btn sm ${isDef ? 'on' : ''}" data-a="plan-default" aria-label="default">★</button>${isDef || !Rules.planById(state.rules, p.id) ? '' : `<button class="btn sm" data-a="plan-del" aria-label="delete"${dis('rules')}>🗑</button>`}<span class="sp"></span><button class="switch" role="switch" aria-checked="${Rules.isOn(p)}" data-a="dplan-on" aria-label="on"></button></div>
   <div><b>When</b>${dayLine(p.times)}</div>
-  <div class="seg"><button data-a="mode" data-v="level" aria-pressed="${lvl}">Level</button><button data-a="mode" data-v="range" aria-pressed="${!lvl}">Range</button></div>
-  <div id="band">${bandSvg(p)}</div>${slider}
+  <div><b>Moisture</b><div id="mline">${moistLine(p)}</div></div>
+  <div class="row wrap">${p.mode === 'range' ? '' : `<div class="seg" style="width:150px"><button data-a="mode" data-v="min" aria-pressed="${p.mode === 'min'}">Min</button><button data-a="mode" data-v="max" aria-pressed="${p.mode === 'max'}">Max</button></div>`}<span class="sp"></span><span id="mtext">${moistText(p)}</span></div>
   <div class="row wrap"><input class="num" id="dose" type="number" inputmode="numeric" step="10" min="10" ${max ? `max="${max}"` : ''} value="${p.dose}" aria-label="mL"><span>mL</span>${[250, 500, 900].map(v => `<button class="btn sm ${p.dose === v ? 'on' : ''}" data-a="dose" data-v="${v}">${v}</button>`).join('')}</div>
   <div class="pchips">${chips}</div>
   ${sheet.test ? previewRow(sheet.test) : ''}
@@ -316,6 +328,24 @@ function runSheet() {
   const p = Rules.planById(state.rules, sheet.plan);
   return `${head('Run now')}<div class="row"><span class="big">${esc(p ? p.name : '—')}</span></div>${p ? previewRow(Rules.preview(state.rules, p.id, state.ch, ctx())) : ''}
   <div class="btns"><button class="btn" data-a="close">✕</button><button class="btn primary" data-a="run"${dis('run')}>▶ Run</button></div>`;
+}
+
+// Runs: the chosen round's pots on top, every round of RUN_DAYS below (tap a row to show it)
+const dateLabel = (ms) => { const d = new Date(ms); return `${WD[d.getDay()]} ${d.getDate()}.${d.getMonth() + 1}. ${hm(ms)}`; };
+const planLabel = (id) => { const p = state.rules && id && Rules.planById(state.rules, id); return p ? p.name : id || '—'; };
+function runsSheet() {
+  const rs = runsHist();
+  if (!rs || !rs.length) return `${head('Runs')}<div class="faint">${rs ? '—' : '…'}</div>`;
+  const i = Math.min(sheet.sel || 0, rs.length - 1), r = rs[i];
+  const pots = r.pots.map(p => { const ok = p.why === 'ok' || p.why === 'cap_trim';
+    return `<tr class="${ok ? '' : 'x'}"><td>${potEmoji(p.ch)} ${potLabel(p.ch)}</td><td class="n">${p.pct === null ? '—' : `${p.pct} %`}</td><td class="n">${ok ? p.ml : '—'}</td><td>${ok ? (p.why === 'cap_trim' ? `✓ ${reasonText(p.why)}` : '✓') : `✕ ${esc(reasonText(p.why))}`}</td></tr>`; }).join('');
+  const rows = rs.map((x, k) => `<tr class="pick${k === i ? ' on' : ''}" data-a="run-sel" data-v="${k}"><td>${dateLabel(x.ts)}</td><td>${x.trigger === 'plan' ? '⏱' : '▶'} ${esc(short(planLabel(x.plan), 10))}</td><td class="n">${x.watered}</td><td class="n">${litres(x.ml)}</td><td class="n">${x.skipped || ''}</td><td class="n">${x.refused ? `<b class="bad">${x.refused}</b>` : ''}</td><td class="n">${x.tankLeft === null ? '—' : litres(x.tankLeft)}</td></tr>`).join('');
+  return `${head('Runs')}
+  <div class="card"><div class="row wrap"><b>${dateLabel(r.ts)}</b><span>${r.trigger === 'plan' ? '⏱' : '▶'} ${esc(planLabel(r.plan))}</span><span class="sp"></span><span class="big">${litres(r.ml)}<small> L</small></span></div>
+    <div class="row wrap"><span>💧 ${r.watered}</span>${r.skipped ? `<span class="faint">⏭ ${r.skipped} skipped</span>` : ''}${r.refused ? `<span class="chip bad">✕ ${r.refused}</span>` : ''}<span class="sp"></span>${r.tankLeft === null ? '' : `<span class="faint">tank ${litres(r.tankLeft)} L</span>`}</div>
+    ${pots ? `<table class="tbl"><thead><tr><th>Pot</th><th class="n">before</th><th class="n">mL</th><th></th></tr></thead><tbody>${pots}</tbody></table>` : ''}</div>
+  <table class="tbl"><thead><tr><th>When</th><th>Plan</th><th class="n">💧</th><th class="n">L</th><th class="n">⏭</th><th class="n">✕</th><th class="n">tank</th></tr></thead><tbody>${rows}</tbody></table>
+  <div class="legend"><span>⏱ timed</span><span>▶ Run now</span><span>💧 watered</span><span>⏭ skipped</span><span>✕ refused</span></div>`;
 }
 
 // Picture + wet level live in the household (not on the board): merge a change into every pot in chs and save the whole map.
@@ -340,7 +370,7 @@ function render(force) {
   const sh = $('#sheet');
   sh.hidden = !sheet; document.body.style.overflow = sheet ? 'hidden' : '';
   if (sheet && (force || !focusIn(sh))) {
-    const top = sh.scrollTop, fn = { pot: potSheet, tank: tankSheet, plans: plansSheet, run: runSheet }[sheet.type];
+    const top = sh.scrollTop, fn = { pot: potSheet, tank: tankSheet, plans: plansSheet, run: runSheet, runs: runsSheet }[sheet.type];
     sh.innerHTML = `<div class="in">${fn()}</div>`; sh.scrollTop = top;
   }
 }
@@ -348,6 +378,18 @@ function openSheet(s) { const same = sheet && sheet.type === s.type; sheet = s; 
 
 // ---------------------------------------------------------------- events
 const dplan = () => Rules.planById(sheet.draft, sheet.edit);
+// Dragging a moisture knob (pointer events; a drag of > 4 px is not a tap)
+let mDrag = { k: null, moved: false };
+function onPointer(e) {
+  if (e.type === 'pointerdown') { const k = e.target.closest('[data-a="m-knob"]'); mDrag = { k: k && sheet && sheet.edit ? k.dataset.k : null, x0: e.clientX, moved: false }; return; }
+  if (!mDrag.k) return;
+  if (e.type !== 'pointermove') { mDrag.k = null; if (mDrag.moved) render(true); return; }
+  if (Math.abs(e.clientX - mDrag.x0) > 4) mDrag.moved = true;
+  if (!mDrag.moved) return;
+  const p = dplan(), x = mVal(e);
+  if (mDrag.k === 'thr') p.thr = x; else if (mDrag.k === 'min') p.min = Math.min(x, p.max - 1); else p.max = Math.max(x, p.min + 1);
+  sheet.test = null; drawMoist(p);
+}
 async function onClick(e) {
   const el = e.target.closest('[data-a]'); if (!el) return;
   const a = el.dataset.a, v = el.dataset.v, ch = el.dataset.ch !== undefined ? +el.dataset.ch : sheet && sheet.ch;
@@ -357,6 +399,8 @@ async function onClick(e) {
     case 'pot': openSheet({ type: 'pot', ch }); break;
     case 'tank': openSheet({ type: 'tank' }); break;
     case 'plans': openSheet({ type: 'plans' }); break;
+    case 'runs': openSheet({ type: 'runs', sel: 0 }); break;
+    case 'run-sel': sheet.sel = +v; $('#sheet').scrollTop = 0; render(true); break;
     case 'run-ask': { const b = bannerPlan(); if (b) openSheet({ type: 'run', plan: b.plan.id }); break; }
     case 'run': { const p = Rules.planById(state.rules, sheet.plan); sheet = null; render(true); cmd('run', { plan: p.id }, 'run', `▶ ${p.name}`); break; }
     case 'stop': cmd('stop', {}, 'stop', '■ STOP'); break;
@@ -413,7 +457,13 @@ async function onClick(e) {
       const p = dplan(); if (p.times.length >= Rules.MAX_TIMES) { toast(`max ${Rules.MAX_TIMES}`); break; }
       const r = el.getBoundingClientRect(), X = (e.clientX - r.left) / r.width * 340 - 10, mins = Math.round(Math.max(0, Math.min(1439, X / 320 * 1440)) / 15) * 15 % 1440;
       const tm = `${pad(Math.floor(mins / 60))}:${pad(mins % 60)}`; if (!p.times.includes(tm)) p.times = [...p.times, tm].sort(); sheet.test = null; render(true); break; }
-    case 'mode': { const p = dplan(); p.mode = v === 'level' ? (sheet.lvl || 'min') : v; if (v === 'min' || v === 'max') sheet.lvl = v; sheet.test = null; render(true); break; }
+    case 'mode': dplan().mode = v; sheet.test = null; render(true); break;
+    case 'm-knob': { if (mDrag.moved) break; const p = dplan(); if (p.mode !== 'range') break;
+      p.thr = el.dataset.k === 'min' ? p.max : p.min; p.mode = sheet.lvl || 'min'; sheet.test = null; render(true); break; }
+    case 'm-add': { if (mDrag.moved) break; const p = dplan(), x = mVal(e);
+      if (p.mode === 'range') { if (Math.abs(x - p.min) <= Math.abs(x - p.max)) p.min = Math.min(x, p.max - 1); else p.max = Math.max(x, p.min + 1); }
+      else { if (x === p.thr) break; sheet.lvl = p.mode; p.min = Math.min(x, p.thr); p.max = Math.max(x, p.thr); p.mode = 'range'; }
+      sheet.test = null; render(true); break; }
     case 'dose': dplan().dose = +v; sheet.test = null; render(true); break;
     case 'tpot': sheet.draft.pots = Rules.togglePot(sheet.draft, ch, sheet.edit); sheet.test = null; render(true); break;
     case 'plan-test': sheet.test = Rules.preview(sheet.draft, sheet.edit, state.ch, ctx()); render(true); break;
@@ -429,12 +479,6 @@ function onInput(e) {
   const p = dplan();
   if (t.id === 'pname') { p.name = t.value; return; }
   if (t.id === 'dose') { const v = Math.round(+t.value); if (v > 0) p.dose = v; sheet.test = null; return; }
-  if (t.id === 'thr') p.thr = +t.value;
-  else if (t.id === 'rmin') { p.min = Math.min(+t.value, p.max - 1); t.value = p.min; }
-  else if (t.id === 'rmax') { p.max = Math.max(+t.value, p.min + 1); t.value = p.max; }
-  else return;
-  sheet.test = null; $('#band').innerHTML = bandSvg(p);
-  $('#dryv').innerHTML = `${p.mode === 'range' ? `${p.min}–${p.max}` : p.thr}<small> %</small>`;
 }
 function onChange(e) {
   const t = e.target, f = t.dataset.f;
@@ -443,7 +487,6 @@ function onChange(e) {
   else if (f === 'tanksize') { const L = +String(t.value).replace(',', '.'); if (L > 0) cmd('tanksize', { ml: Math.round(L * 1000) }, 'tanksize', `Tank ${L} L`); }
   else if (f === 'fch') sheet.fch = +t.value;
   else if (t.id === 'wet') { const w = Math.round(+t.value); if (!(w >= 1 && w <= 100)) { toast('✕ 1 – 100 %'); t.value = wetOf(sheet.ch); return; } sheet.ask = 'wet'; setLook([sheet.ch], { wet: w }, `Wet > ${w} %`); }
-  else if (/^(thr|rmin|rmax)$/.test(t.id)) render(true);
 }
 
 // ---------------------------------------------------------------- start
@@ -466,9 +509,12 @@ async function main() {
   await backend.init();
   if (!backend.session()) { await showLogin(); await backend.init(); }
   state = backend.getState();
-  backend.subscribe(s => { state = s; render(); });
+  // a round ends with its event a few seconds after the last dose → reload the history once the station goes idle
+  let wasRunning = false;
+  backend.subscribe(s => { state = s; const r = !!(s.t.running || s.t.queue.length); if (wasRunning && !r) setTimeout(() => { invalidate(); render(); }, 8000); wasRunning = r; render(); });
   document.addEventListener('click', onClick);
   document.addEventListener('input', onInput);
+  ['pointerdown', 'pointermove', 'pointerup', 'pointercancel'].forEach(t => document.addEventListener(t, onPointer));
   document.addEventListener('change', onChange);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && sheet) { sheet = null; render(true); return; }

@@ -97,6 +97,13 @@ select.num { width: auto; font-size: 16px; max-width: 100%; }
 .banner { display: flex; align-items: center; gap: 8px; width: 100%; border: 2px solid var(--accent); border-radius: 4px; background: var(--accent-soft); color: var(--text); padding: 8px 10px; text-align: left; min-height: 44px; flex-wrap: wrap; }
 .banner b { font-size: 17px; }
 .banner .frost { color: var(--wet); font-weight: 700; }
+.banner.last { border-color: var(--border); background: var(--bg); }
+.tbl { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+.tbl th { text-align: left; font-size: 12px; font-weight: 700; color: var(--text-3); padding: 4px; border-bottom: 2px solid var(--border); }
+.tbl td { padding: 6px 4px; border-bottom: 1px solid var(--border-2); white-space: nowrap; }
+.tbl .n { text-align: right; } .tbl .bad { color: var(--red); }
+.tbl tr.x td { color: var(--text-3); }
+.tbl tr.pick { cursor: pointer; } .tbl tr.pick.on td { background: var(--accent-soft); }
 .spider { display: block; max-width: 440px; margin: 0 auto; }
 .spider .node { cursor: pointer; }
 .defs { position: absolute; width: 0; height: 0; overflow: hidden; }
@@ -114,14 +121,11 @@ select.num { width: auto; font-size: 16px; max-width: 100%; }
 .pchips button.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .pchips .warn { color: var(--amber); }
 input[type=range] { width: 100%; accent-color: var(--accent); margin: 6px 0; }
-.dual { position: relative; height: 36px; }
-.dual input { position: absolute; inset: 0; pointer-events: none; background: none; margin: 8px 0; }
-.dual input::-webkit-slider-thumb { pointer-events: auto; }
-.dual input::-moz-range-thumb { pointer-events: auto; }
 .planrow { display: flex; align-items: center; gap: 10px; border: 2px solid var(--border); border-radius: 4px; padding: 8px 10px; }
 .planrow.off { opacity: .6; }
 .planrow .open { flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 0; display: grid; gap: 2px; }
 .dayline { touch-action: manipulation; cursor: crosshair; }
+.mline { touch-action: pan-y; cursor: pointer; user-select: none; -webkit-user-select: none; }
 .pv { display: flex; flex-wrap: wrap; gap: 6px; }
 .pv span { display: grid; justify-items: center; min-width: 38px; border: 2px solid var(--border-2); border-radius: 4px; padding: 2px 4px; font-size: 13px; }
 .pv span b { font-size: 15px; } .pv span.w { border-color: var(--accent); background: var(--accent-soft); } .pv span.x { border-color: var(--amber); }
