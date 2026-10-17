@@ -1,6 +1,6 @@
 // rules.test.js — run with:  node app/web/rules.test.js
-// rules v2 (firmware 0.5.0 contract): validate · normalize/compile/hash · plan helpers · triggers · decide() in min / max / range
-// (hysteresis), no-sensor reasons, cap trim, tank, frost · preview().
+// rules v3 (firmware 0.6.0 contract): validate · normalize/compile/hash · v2 upgrade · plan + pot helpers · triggers · decide() in
+// min / max / range (hysteresis), sensorless pots watered blind, cap trim, tank, frost · preview().
 'use strict';
 const R = require('./rules.js');
 let pass = 0, fail = 0;
@@ -9,10 +9,14 @@ function eq(name, got, want) {
   if (g === w) pass++; else { fail++; console.log(`FAIL ${name}\n   got  ${g}\n   want ${w}`); }
 }
 
-// the contract's example document
-const DOC = { v: 2, plans: [
-  { id: 'a', name: 'Default', on: true, times: ['07:00', '19:00'], mode: 'min', thr: 49, min: 35, max: 60, dose: 900 },
-  { id: 'b', name: 'Herbs', on: false, times: ['08:30'], mode: 'range', thr: 49, min: 35, max: 60, dose: 250 }],
+// the contract's example document: plans = when, pot[] = moisture + amount per pot (pot 7 = ch 6 on Herbs: range, 250 mL)
+const PA = { mode: 'min', thr: 49, min: 35, max: 60, ml: 900 }, PB = { mode: 'range', thr: 49, min: 35, max: 60, ml: 250 };
+const DOC = { v: 3, plans: [
+  { id: 'a', name: 'Default', on: true, times: ['07:00', '19:00'] },
+  { id: 'b', name: 'Herbs', on: false, times: ['08:30'] }],
+  default: 'a', pots: { 6: 'b', 10: 'off' }, pot: Array.from({ length: 16 }, (_, ch) => ({ ...(ch === 6 ? PB : PA) })) };
+// the same document in the v2 form (firmware ≤ 0.5.1): moisture + dose on the plans
+const DOC2 = { v: 2, plans: [{ ...DOC.plans[0], mode: 'min', thr: 49, min: 35, max: 60, dose: 900 }, { ...DOC.plans[1], mode: 'range', thr: 49, min: 35, max: 60, dose: 250 }],
   default: 'a', pots: { 6: 'b', 10: 'off' } };
 const bad = (patch) => { const o = JSON.parse(JSON.stringify(DOC)); patch(o); return R.validate(o); };
 
@@ -20,7 +24,8 @@ const bad = (patch) => { const o = JSON.parse(JSON.stringify(DOC)); patch(o); re
 eq('valid', R.validate(DOC), null);
 eq('empty() valid', R.validate(R.empty()), null);
 eq('v1 rejected', bad(o => { o.v = 1; }), 'v1');
-eq('v other', bad(o => { o.v = 3; }), 'v');
+eq('v2 not valid as such', bad(o => { o.v = 2; }), 'v');
+eq('v other', bad(o => { o.v = 4; }), 'v');
 eq('no plans', bad(o => { o.plans = []; }), 'plans');
 eq('5 plans', bad(o => { o.plans = 'abcda'.split('').map((id, i) => ({ ...o.plans[0], id: 'abcd'[i % 4] })); }), 'plans');
 eq('dup id', bad(o => { o.plans[1].id = 'a'; }), 'plans[1].id');
@@ -33,12 +38,17 @@ eq('times 3 ok', bad(o => { o.plans[0].times = ['01:00', '02:00', '03:00']; }), 
 eq('times empty ok (Run now only)', bad(o => { o.plans[0].times = []; }), null);
 eq('time 24:00', bad(o => { o.plans[0].times = ['24:00']; }), 'plans[0].times');
 eq('everyMin gone', bad(o => { delete o.plans[0].times; o.plans[0].everyMin = 720; }), 'plans[0].times');
-eq('mode dry gone', bad(o => { o.plans[0].mode = 'dry'; }), 'plans[0].mode');
-eq('thr 101', bad(o => { o.plans[0].thr = 101; }), 'plans[0].thr');
-eq('range min ≥ max', bad(o => { o.plans[1].min = 60; }), 'plans[1].min/max');
-eq('range ignores thr', bad(o => { o.plans[1].thr = 500; }), null);
-eq('dose 0', bad(o => { o.plans[0].dose = 0; }), 'plans[0].dose');
-eq('dose 5000 ok (board trims)', bad(o => { o.plans[0].dose = 5000; }), null);
+eq('plan with mode refused', bad(o => { o.plans[0].mode = 'min'; }), 'plans[0]');
+eq('plan with dose refused', bad(o => { o.plans[0].dose = 900; }), 'plans[0]');
+eq('pot absent ok (defaults)', bad(o => { delete o.pot; }), null);
+eq('pot 17 entries', bad(o => { o.pot.push({ ...PA }); }), 'pot');
+eq('pot mode dry', bad(o => { o.pot[0].mode = 'dry'; }), 'pot[0].mode');
+eq('pot thr 100', bad(o => { o.pot[0].thr = 100; }), 'pot[0].thr');
+eq('pot thr 0', bad(o => { o.pot[0].thr = 0; }), 'pot[0].thr');
+eq('pot max 100 ok', bad(o => { o.pot[6].max = 100; }), null);
+eq('pot range min ≥ max', bad(o => { o.pot[6].min = 60; }), 'pot[6].min');
+eq('pot ml 5', bad(o => { o.pot[0].ml = 5; }), 'pot[0].ml');
+eq('pot ml 5000 ok (board trims)', bad(o => { o.pot[0].ml = 5000; }), null);
 eq('dailyML optional bad', bad(o => { o.plans[0].dailyML = -1; }), 'plans[0].dailyML');
 eq('default missing', bad(o => { o.default = 'c'; }), 'default');
 eq('pots ch 16', bad(o => { o.pots[16] = 'a'; }), 'pots.16');
@@ -46,8 +56,9 @@ eq('pots unknown plan', bad(o => { o.pots[3] = 'c'; }), 'pots.3');
 
 // ---- normalize / compile / fromJSON / hash
 {
-  const n = R.normalize({ ...DOC, plans: [{ ...DOC.plans[0], times: ['19:00', '07:00', '07:00'], on: undefined, dailyML: 6000 }], pots: { 10: 'off', 2: 'a' } });
-  eq('normalize order + defaults dropped', JSON.stringify(n), '{"v":2,"plans":[{"id":"a","name":"Default","on":true,"times":["07:00","19:00"],"mode":"min","thr":49,"min":35,"max":60,"dose":900,"dailyML":6000}],"default":"a","pots":{"10":"off"}}');
+  const n = R.normalize({ ...DOC, plans: [{ ...DOC.plans[0], times: ['19:00', '07:00', '07:00'], on: undefined, dailyML: 6000 }], pots: { 10: 'off', 2: 'a' }, pot: [{ ml: 500, mode: 'max', thr: 85 }] });
+  const P0 = '{"mode":"max","thr":85,"min":35,"max":60,"ml":500}', PD = '{"mode":"min","thr":35,"min":35,"max":60,"ml":250}';
+  eq('normalize order + defaults filled', JSON.stringify(n), `{"v":3,"plans":[{"id":"a","name":"Default","on":true,"times":["07:00","19:00"],"dailyML":6000}],"default":"a","pots":{"10":"off"},"pot":[${[P0].concat(Array(15).fill(PD)).join(',')}]}`);
   eq('compile = normalize', R.compile(DOC), JSON.stringify(R.normalize(DOC)));
   eq('fromJSON string', R.fromJSON(JSON.stringify(DOC)).ok, true);
   eq('fromJSON v1', R.fromJSON({ v: 1, schedule: [] }).error, 'v1');
@@ -56,13 +67,22 @@ eq('pots unknown plan', bad(o => { o.pots[3] = 'c'; }), 'pots.3');
   eq('hash stable', R.hash(R.compile(DOC)), R.hash(R.compile(JSON.parse(JSON.stringify(DOC)))));
 }
 
+// ---- v2 → v3 (the board does the same at boot)
+eq('upgrade v2 = DOC', R.compile(R.upgrade(DOC2)), R.compile(DOC));
+eq('upgrade: off pot takes the default plan', R.upgrade(DOC2).pot[10], { mode: 'min', thr: 49, min: 35, max: 60, ml: 900 });
+eq('fromJSON v2 upgrades', R.fromJSON(DOC2).rules.v, 3);
+eq('upgrade leaves v3', R.upgrade(DOC), DOC);
+
 // ---- helpers
 eq('potPlanId default', R.potPlanId(DOC, 0), 'a');
 eq('potPlanId b', R.potPlanId(DOC, 6), 'b');
 eq('planOf off', R.planOf(DOC, 10), null);
 eq('nextId', R.nextId(DOC), 'c');
-eq('thrOf min', R.thrOf(DOC.plans[0]), 49);
-eq('thrOf range', R.thrOf(DOC.plans[1]), 35);
+eq('thrOf min', R.thrOf(R.potSet(DOC, 0)), 49);
+eq('thrOf range', R.thrOf(R.potSet(DOC, 6)), 35);
+eq('potSet default when absent', R.potSet({ v: 3 }, 3), R.POT_DEFAULT);
+eq('setPotSet patches one pot', R.setPotSet(DOC, 2, { ml: 300 }).map(p => p.ml).slice(0, 4), [900, 900, 300, 900]);
+eq('setPotSet keeps the document', DOC.pot[2].ml, 900);
 eq('togglePot default → b', R.togglePot(DOC, 0, 'b'), { 0: 'b', 6: 'b', 10: 'off' });
 eq('togglePot b → back', R.togglePot(DOC, 6, 'b'), { 10: 'off' });
 eq('togglePot off → default', R.togglePot(DOC, 10, 'a'), { 6: 'b' });
@@ -85,7 +105,7 @@ eq('setPot default', R.setPot(DOC, 6, 'a'), { 10: 'off' });
 // ---- decide
 const C = (o) => Object.assign({ senEn: true, valEn: true, sState: 0, pct: 40, filling: false }, o);
 const X = { maxDoseML: 2700, tankLeft: 15000, tankReserve: 500, frost: false };
-const min = DOC.plans[0], max = { ...min, mode: 'max', thr: 70 }, range = DOC.plans[1];
+const min = PA, max = { ...PA, mode: 'max', thr: 70 }, range = PB;
 eq('min dry → water', R.decide(min, C({ pct: 40 }), X), { action: 'water', why: 'watered', ml: 900, filling: false });
 eq('min at thr → wet', R.decide(min, C({ pct: 49 }), X).why, 'wet');
 eq('max below → water', R.decide(max, C({ pct: 69 }), X).action, 'water');
@@ -104,7 +124,7 @@ eq('uncalibrated → water', R.decide(max, C({ sState: 3 }), X).action, 'water')
 eq('no sensor still stops on frost', R.decide(min, C({ senEn: false }), { ...X, frost: true }).why, 'frost');
 eq('no sensor still keeps the tank reserve', R.decide(min, C({ senEn: false }), { ...X, tankLeft: 1300 }).why, 'tank');
 eq('no sensor keeps filling flag', R.decide(range, C({ sState: 1, filling: true }), X).filling, true);
-eq('cap trim', R.decide({ ...min, dose: 3000 }, C(), X), { action: 'water', why: 'cap_trim', ml: 2700, filling: false });
+eq('cap trim', R.decide({ ...min, ml: 3000 }, C(), X), { action: 'water', why: 'cap_trim', ml: 2700, filling: false });
 eq('tank reserve', R.decide(min, C(), { ...X, tankLeft: 1300 }).why, 'tank');
 eq('frost', R.decide(min, C(), { ...X, frost: true }).why, 'frost');
 eq('frost does not hide wet', R.decide(min, C({ pct: 80 }), { ...X, frost: true }).why, 'wet');

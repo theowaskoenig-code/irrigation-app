@@ -24,10 +24,10 @@ function createMockBackend(config) {
   }
   const b = { fw: '0.5.0-mock', mlPerSec: 30.0, tankFullML: 25000, tankLeft: 15300, pumpRunning: false, pumpEn: true, havePCA: true,
     running: null, queue: [], frostMinC: frostQ ? 1.5 : 8.5, frostAt: Date.now() - 20 * 60e3, up: 3 * 86400,
-    rules: { v: 2, plans: [
+    rules: Rules.upgrade({ v: 2, plans: [
       { id: 'a', name: 'Default', on: true, times: ['07:00', '19:00'], mode: 'min', thr: 49, min: 35, max: 60, dose: 900 },
       { id: 'b', name: 'Herbs', on: false, times: ['08:30'], mode: 'max', thr: 70, min: 35, max: 60, dose: 250 }],
-      default: 'a', pots: { 6: 'b' } } };
+      default: 'a', pots: { 6: 'b' } }) };   // written in the v2 form, handed to the pots as a 0.6.0 board does at boot
   b.rulesHash = Rules.hash(Rules.compile(b.rules));
   const maxDose = () => Math.floor(b.mlPerSec * MAX_PUMP_MS / 1000 / 10) * 10;
   const frostNow = () => b.frostMinC !== null && Date.now() - b.frostAt < 6 * 3600e3 && b.frostMinC < 3;
@@ -125,7 +125,7 @@ function createMockBackend(config) {
     let watered = 0, skipped = 0, refused = 0;
     for (const item of plan0) {
       if (abort) break;
-      const c = chs[item.ch], d = Rules.decide(plan, c, ctx());
+      const c = chs[item.ch], d = Rules.decide(Rules.potSet(b.rules, item.ch), c, ctx());
       c.lastWhy = d.why; c.filling = d.filling;
       b.queue = b.queue.filter(x => x !== item.ch);
       if (d.action === 'water') { const r = await dose(item.ch, d.ml, planId); watered++; if (!r.ok) break; }
