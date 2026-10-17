@@ -249,7 +249,6 @@ function potSheet() {
   <div class="setrow"><span class="lab">Fitted</span><span>Sensor</span><button class="switch" role="switch" aria-checked="${c.senEn}" data-a="en" data-k="s" aria-label="sensor fitted"${dis(`en:s${ch}`)}></button><span>Valve</span><button class="switch" role="switch" aria-checked="${c.valEn}" data-a="en" data-k="v" aria-label="valve fitted"${dis(`en:v${ch}`)}></button></div>
   <div class="setrow"><span class="lab">Calibrate</span><button class="btn sm ${sheet.cal && sheet.cal.kind === 'air' ? 'on' : ''}" data-a="cal-open" data-k="air">Air & water</button><button class="btn sm ${sheet.cal && sheet.cal.kind === 'soil' ? 'on' : ''}" data-a="cal-open" data-k="soil">Dry & wet soil</button></div>
   ${sheet.cal ? calGuide(ch) : ''}
-  <div class="setrow"><span class="lab">Wet</span><span>above</span><input class="num" id="wet" type="number" inputmode="numeric" min="1" max="100" step="1" value="${wetOf(ch)}" style="width:72px" aria-label="wet above %"><span>%</span>${sheet.ask === 'wet' ? `<span class="sp"></span><button class="btn sm" data-a="wet-all"${dis('look')}>Apply to all pots</button>` : ''}</div>
   <div class="setrow"><span class="lab">Valve µs</span></div>
   <div class="btns"><label class="row">open<input class="num" id="vo" type="number" inputmode="numeric" step="10" value="${c.vOpenUs ?? ''}" style="width:100%" aria-label="open µs"></label><label class="row">closed<input class="num" id="vc" type="number" inputmode="numeric" step="10" value="${c.vClosedUs ?? ''}" style="width:100%" aria-label="closed µs"></label></div>
   <div class="btns"><button class="btn sm" data-a="servo-test"${dis(`valve:${ch}`)}>Test</button><button class="btn sm" data-a="servo-ask">Apply</button></div>
@@ -476,7 +475,6 @@ async function onClick(e) {
       break; }
     case 'cal-again': sheet.cal = { kind: sheet.cal.kind, step: 0, a: null, b: null }; render(true); break;
     case 'emoji': setLook([ch], { e: v }, null); break;
-    case 'wet-all': { const w = wetOf(ch); sheet.ask = null; setLook([...Array(16).keys()], { wet: w }, `Wet > ${w} % · all pots`); break; }
     case 'cal-copy': cmd('cal_copy', { ch, kind: sheet.cal.kind === 'soil' ? 'soil' : 'air' }, `cal:${ch}`, 'All sensors'); break;
     case 'servo-test': { const o = intOf('#vo'), c = intOf('#vc'); if (!o || !c) break;
       const r1 = await cmd('servo', { ch, openUs: o, closedUs: c, all: false }, 'servo', `Valve ${ch + 1} µs`, true);
@@ -543,7 +541,6 @@ function onChange(e) {
   else if (f === 'tanksize') { const L = +String(t.value).replace(',', '.'); if (L > 0) cmd('tanksize', { ml: Math.round(L * 1000) }, 'tanksize', `Tank ${L} L`); }
   else if (f === 'fch') sheet.fch = +t.value;
   else if (t.id === 'pml') { const v = Math.round(+t.value), p = mEdit(); if (!p) return; if (!(v >= 10)) { toast('✕ ≥ 10 mL'); render(true); return; } p.ml = v; savePot(); }
-  else if (t.id === 'wet') { const w = Math.round(+t.value); if (!(w >= 1 && w <= 100)) { toast('✕ 1 – 100 %'); t.value = wetOf(sheet.ch); return; } sheet.ask = 'wet'; setLook([sheet.ch], { wet: w }, `Wet > ${w} %`); }
 }
 
 // ---------------------------------------------------------------- start
