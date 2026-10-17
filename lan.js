@@ -79,6 +79,7 @@ function createLanBackend(config) {
       case 'tanksize': return `tanksize ${Math.round(a.ml)}`;
       case 'en': return `en ${a.what} ${a.on ? 'on' : 'off'}`;
       case 'refresh': return 'r';
+      case 'sensor_in': return `sin ${n1(a)} ${(a.input | 0) + 1}`;
       default: return null;
     }
   }

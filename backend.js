@@ -53,7 +53,7 @@ function mapPayload(p) {
   const src = Array.isArray(p.ch) ? p.ch : [], ch = [];
   for (let i = 0; i < N_CH; i++) {
     const c = src.find(x => x && x.i === i) || src[i] || {};
-    ch.push({ i, senEn: c.senEn === true, valEn: c.valEn === true, raw: n(c.raw, 0), pct: n(c.pct, -1), sd: n(c.sd, 0), sState: n(c.sState, 1),
+    ch.push({ i, in: n(c.in, i), senEn: c.senEn === true, valEn: c.valEn === true, raw: n(c.raw, 0), pct: n(c.pct, -1), sd: n(c.sd, 0), sState: n(c.sState, 1),
       air: n(c.air, -1), water: n(c.water, -1), soilDry: n(c.soilDry, -1), soilWet: n(c.soilWet, -1),
       vState: n(c.vState, 0), vOpenUs: n(c.vOpenUs, null), vClosedUs: n(c.vClosedUs, null),
       todayML: n(c.todayML, 0), lastML: n(c.lastML, 0), lastTs: n(c.lastTs, 0) > 0 ? c.lastTs * 1000 : null, lastWhy: s(c.lastWhy),
@@ -122,4 +122,13 @@ function runsFromEvents(events, from) {
   return runs.reverse();
 }
 
-if (typeof module !== 'undefined') module.exports = { mapPayload, frostBlocks, connState, historyFromLocal, runsFromEvents, reasonText, dayStart };   // backend.test.js
+// Find sensor: two reads (raw[16] + sd[16] per pot, from refresh) — before, and with the sensor in water. The one steady input
+// (sd ≤ the board's 60, raw 100–4000, in both reads) that moved ≥ 300 counts, clearly more than any other, is the sensor.
+// → { k: pot index whose input moved } | { k: -1, moved: [pot indexes] } (none, or several close together)
+const FIND_MIN = 300;
+function findSensor(a, b) {
+  const ok = (r, i) => r.sd[i] <= 60 && r.raw[i] >= 100 && r.raw[i] <= 4000;
+  const m = a.raw.map((x, i) => ({ i, d: ok(a, i) && ok(b, i) ? Math.abs(x - b.raw[i]) : 0 })).filter(x => x.d >= FIND_MIN).sort((x, y) => y.d - x.d);
+  return m.length && (m.length === 1 || m[1].d < m[0].d / 2) ? { k: m[0].i, d: m[0].d } : { k: -1, moved: m.map(x => x.i) };
+}
+if (typeof module !== 'undefined') module.exports = { mapPayload, frostBlocks, connState, historyFromLocal, runsFromEvents, reasonText, dayStart, findSensor };   // backend.test.js

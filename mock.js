@@ -18,7 +18,7 @@ function createMockBackend(config) {
   const chs = [];
   for (let i = 0; i < 16; i++) {
     const air = 2700 + Math.round(Math.random() * 90), water = 1600 + Math.round(Math.random() * 70);
-    chs.push({ senEn: i < 6, valEn: i < 7, air: i < 6 ? air : -1, water: i < 6 ? water : -1, soilDry: i === 0 ? 2510 : -1, soilWet: i === 0 ? 1650 : -1,
+    chs.push({ in: i, senEn: i < 6, autoOff: false, _plug: i < 6, valEn: i < 7, air: i < 6 ? air : -1, water: i < 6 ? water : -1, soilDry: i === 0 ? 2510 : -1, soilWet: i === 0 ? 1650 : -1,
       _air: air, _water: water, _true: TRUE[i] === undefined ? 50 : TRUE[i], _rate: 0.004 + Math.random() * 0.006,
       raw: 0, pct: -1, sd: 0, sState: 1, vState: 1, vOpenUs: 2500, vClosedUs: 1300, todayML: 0, lastML: 0, lastTs: 0, lastWhy: '', filling: false });
   }
@@ -33,7 +33,7 @@ function createMockBackend(config) {
   const frostNow = () => b.frostMinC !== null && Date.now() - b.frostAt < 6 * 3600e3 && b.frostMinC < 3;
 
   function readCh(c) {
-    if (!c.senEn) { c.raw = 300 + Math.round(Math.random() * 3400); c.sd = 180 + Math.round(Math.random() * 120); c.sState = 1; c.pct = -1; return; }
+    if (!c._plug) { c.raw = 300 + Math.round(Math.random() * 3400); c.sd = 180 + Math.round(Math.random() * 120); c.sState = 1; c.pct = -1; return; }
     c.raw = Math.round(c._air - c._true / 100 * (c._air - c._water) + (Math.random() - .5) * 16); c.sd = 5 + Math.round(Math.random() * 6);
     if (c.sd > SWIM_SD || c.raw < 100 || c.raw > 4000) { c.sState = 1; c.pct = -1; return; }
     if (c.air < 0 || c.water < 0) { c.sState = 3; c.pct = -1; return; }
@@ -41,6 +41,8 @@ function createMockBackend(config) {
     c.sState = 0; c.pct = clamp(Math.round(100 * (c.air - c.raw) / (c.air - c.water)), 0, 100);
   }
   const readAll = () => chs.forEach(readCh);
+  // as fw 0.7.0: after a read the Sensor switch follows what is plugged in (a pot the user switched off stays off)
+  const autoFit = () => chs.forEach(c => { if (c.senEn && c.sState === 1) { c.senEn = false; c.autoOff = true; } else if (!c.senEn && c.autoOff && c.sState !== 1) { c.senEn = true; c.autoOff = false; } });
   readAll();
 
   // ---- history: 30 days of rounds at 07:00 / 19:00, refills when the tank runs low, one level set ----
@@ -76,7 +78,7 @@ function createMockBackend(config) {
       tankReserve: RESERVE, pumpRunning: b.pumpRunning, pumpEn: b.pumpEn, rulesHash: b.rulesHash,
       planNext: nt ? Math.floor(nt.t / 1000) : 0, planNextId: nt ? nt.plan.id : '', running: b.running, queue: b.queue.slice(),
       frostMinC: b.frostMinC, frostAgeS: Math.round((Date.now() - b.frostAt) / 1000),
-      ch: chs.map(c => ({ senEn: c.senEn, valEn: c.valEn, raw: c.raw, pct: c.pct, sd: c.sd, sState: c.sState, air: c.air, water: c.water,
+      ch: chs.map(c => ({ in: c.in, senEn: c.senEn, valEn: c.valEn, raw: c.raw, pct: c.pct, sd: c.sd, sState: c.sState, air: c.air, water: c.water,
         soilDry: c.soilDry, soilWet: c.soilWet, vState: c.vState, vOpenUs: c.vOpenUs, vClosedUs: c.vClosedUs, todayML: c.todayML,
         lastML: c.lastML, lastTs: c.lastTs ? Math.floor(c.lastTs / 1000) : 0, lastWhy: c.lastWhy, filling: c.filling })) };
   }
@@ -118,7 +120,7 @@ function createMockBackend(config) {
   }
   async function round(planId) {
     const plan = Rules.planById(b.rules, planId); if (!plan) return { ok: false, reason: 'no_plan' };
-    abort = false; readAll(); await closeOthers(-1);
+    abort = false; readAll(); autoFit(); await closeOthers(-1);
     const ctx = () => ({ maxDoseML: maxDose(), tankLeft: b.tankLeft, tankReserve: RESERVE, frost: frostNow() });
     const plan0 = Rules.preview(b.rules, planId, chs, ctx());
     b.queue = plan0.filter(x => x.action === 'water').map(x => x.ch); emit();
@@ -178,8 +180,13 @@ function createMockBackend(config) {
       case 'flow': { const f = +a.mlPerSec; if (!(f >= 1 && f <= 200)) return { ok: false, reason: 'range' }; b.mlPerSec = +f.toFixed(1); return { ok: true, mlPerSec: b.mlPerSec, maxDoseML: maxDose() }; }
       case 'tank': b.tankLeft = a.full ? b.tankFullML : clamp(Math.round(+a.ml || 0), 0, b.tankFullML); pushEvent({ kind: a.full ? 'refill' : 'level', tankLeft: b.tankLeft }); readings.push({ ts: Date.now(), tankLeft: b.tankLeft }); return { ok: true, tankLeft: b.tankLeft };
       case 'tanksize': { const v = Math.round(+a.ml); if (!(v > 0)) return { ok: false, reason: 'range' }; b.tankFullML = v; b.tankLeft = Math.min(b.tankLeft, v); return { ok: true, tankFullML: v }; }
-      case 'en': { const w = en(a.what); if (!w) return { ok: false, reason: 'bad_what' }; if (w.k === 's') chs[w.ch].senEn = !!a.on; else chs[w.ch].valEn = !!a.on; readCh(chs[w.ch]); return { ok: true }; }
-      case 'refresh': readAll(); return { ok: true };
+      case 'en': { const w = en(a.what); if (!w) return { ok: false, reason: 'bad_what' }; if (w.k === 's') { chs[w.ch].senEn = !!a.on; chs[w.ch].autoOff = false; } else chs[w.ch].valEn = !!a.on; readCh(chs[w.ch]); return { ok: true }; }
+      case 'refresh': readAll(); autoFit(); return { ok: true, raw: chs.map(x => x.raw), sd: chs.map(x => x.sd) };
+      case 'sensor_in': {   // pot ch reads socket input; the pot that had it takes ch's old one — the sensor's settings move along
+        if (!c || !(a.input >= 0 && a.input < 16)) return { ok: false, reason: 'badargs' };
+        const o = chs.findIndex(x => x.in === a.input), d = chs[o];
+        if (o !== a.ch) ['in', 'air', 'water', 'soilDry', 'soilWet', 'senEn', 'autoOff', '_plug', '_air', '_water', '_true'].forEach(k => { const t = c[k]; c[k] = d[k]; d[k] = t; });
+        readCh(c); readCh(d); return { ok: true, ch: a.ch, input: a.input, other: o, otherInput: d.in }; }
       case 'frost': b.frostMinC = +a.tMinC; b.frostAt = Date.now(); return { ok: true };
       default: return { ok: false, reason: 'unknown_cmd' };
     }

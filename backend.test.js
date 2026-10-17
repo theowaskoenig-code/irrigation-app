@@ -126,5 +126,18 @@ const D = (y, m, d, h, mi) => new Date(y, m - 1, d, h || 0, mi || 0).getTime();
   eq('from cuts older rounds', B.runsFromEvents(ev, T).length, 1);
 }
 
+// ---- findSensor: the one steady input that moved; swimming inputs never count; none / two close together = no answer
+{
+  const r = (raw, sd) => ({ raw, sd: sd || raw.map(() => 10) });
+  const base = Array.from({ length: 16 }, () => 2500);
+  const after = base.slice(); after[6] = 1650; after[2] = 2440;
+  eq('one input moved', B.findSensor(r(base), r(after)), { k: 6, d: 850 });
+  const sw = base.map(() => 10); sw[9] = 250; const a2 = after.slice(); a2[9] = 400;
+  eq('a swimming input is ignored', B.findSensor(r(base, sw), r(a2, sw)).k, 6);
+  eq('nothing moved', B.findSensor(r(base), r(base)), { k: -1, moved: [] });
+  const a3 = after.slice(); a3[3] = 1800;
+  eq('two moved alike', B.findSensor(r(base), r(a3)), { k: -1, moved: [6, 3] });
+}
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -4,6 +4,7 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let backend, state, sheet = null, chartOff = 0;
+let find = null;   // Find sensor: { step 0 | 1 | 2, a, b (refresh reads), hit } — shown under the station buttons
 const busy = new Set();                       // in-flight commands, keyed per pot/command ('valve:3', 'water:3', 'run' …)
 const H = {};                                 // history cache: key → { data, at, loading, err }
 const CH_DAYS = 16, CH_AHEAD = 2, CH_BACK = 92, CH_FWD = 7;
@@ -189,8 +190,18 @@ function stationCard() {
   const run = r ? `<div class="row"><b>${potLabel(r.ch)}</b><span class="sp"></span><span>${r.ml} / ${r.target} mL</span></div><div class="mbar"><i style="width:${r.target ? Math.min(100, 100 * r.ml / r.target) : 0}%;background:var(--accent)"></i></div>` : '';
   return `<div class="card${act ? ' running' : ''}">${banner()}${lastRunBanner()}${run}${spiderSvg()}
   <div class="btns"><button class="btn primary" data-a="run-ask" ${!b || busy.has('run') || t.running ? 'disabled' : ''}>▶ Run now</button>${act ? '<button class="btn stop" data-a="stop">■ STOP</button>' : ''}</div>
-  <div class="btns"><button class="btn sm" data-a="vall" data-v="1"${dis('valves_all')}>Open all</button><button class="btn sm" data-a="vall" data-v="0"${dis('valves_all')}>Close all</button>${t.pumpRunning ? `<button class="btn sm on" data-a="pump" data-v="0"${dis('pumpoff')}>Pump off</button>` : `<button class="btn sm" data-a="pump" data-v="1"${dis('pump')}>Pump on</button>`}</div>
+  <div class="btns"><button class="btn sm" data-a="vall" data-v="1"${dis('valves_all')}>Open all</button><button class="btn sm" data-a="vall" data-v="0"${dis('valves_all')}>Close all</button>${t.pumpRunning ? `<button class="btn sm on" data-a="pump" data-v="0"${dis('pumpoff')}>Pump off</button>` : `<button class="btn sm" data-a="pump" data-v="1"${dis('pump')}>Pump on</button>`}<button class="btn sm${find ? ' on' : ''}" data-a="find">Find sensor</button></div>
+  ${find ? findPanel() : ''}
   <div class="legend"><span><span class="dot" style="background:var(--amber)"></span>dry</span><span><span class="dot" style="background:var(--green)"></span>ok</span><span><span class="dot" style="background:var(--wet)"></span>wet</span><span><span class="dot" style="background:var(--accent)"></span>watering</span><span><span class="dot" style="background:var(--text-3)"></span>no sensor</span></div></div>`;
+}
+// Find sensor: read as it is → read in water → the socket that moved, and which pot it sits in
+function findPanel() {
+  const x = '<button class="btn sm" data-a="find-x" aria-label="close">✕</button>', again = '<button class="btn sm" data-a="find-again" aria-label="again">↺</button>';
+  if (find.step < 2) return `<div class="row find"><b>${find.step ? '② in water' : '① as it is'}</b><span class="sp"></span><button class="btn primary sm" data-a="find-read"${dis('find')}>● Read</button>${x}</div>`;
+  const h = find.hit;
+  if (h.k < 0) return `<div class="row find"><span class="bad">✕ ${h.moved.length ? h.moved.map(k => `S${state.ch[k].in + 1}`).join(' · ') : '—'}</span><span class="sp"></span>${again}${x}</div>`;
+  const inp = state.ch[h.k].in, opts = state.ch.map((c, k) => `<option value="${k}"${k === h.k ? ' selected' : ''}>${potEmoji(k)} ${potLabel(k)}</option>`).join('');
+  return `<div class="row find wrap"><b>S${inp + 1}</b><span class="faint">${find.a.raw[h.k]} → ${find.b.raw[h.k]}</span><span>in</span><select class="num" id="fpot" aria-label="pot">${opts}</select><span class="sp"></span><button class="btn primary sm" data-a="find-save"${dis('sensor_in')}>✓</button>${again}${x}</div>`;
 }
 
 // ---------------------------------------------------------------- sheets
@@ -230,7 +241,7 @@ function potSheet() {
   return `${head(`Pot ${ch + 1}`)}
   <div class="row"><input class="inline-edit name" data-f="name" value="${esc(state.potNames[ch] || '')}" placeholder="Pot ${ch + 1}" aria-label="name">${fitted(c) ? chip(k) : ''}<span class="sp"></span>${Rules.sensorWhy(c) ? '' : `<span class="big">${c.pct}<small> %</small></span>`}</div>
   <div class="emo">${EMOJIS.map(e => `<button data-a="emoji" data-v="${e}" aria-pressed="${e === potEmoji(ch)}" aria-label="${e}"${dis('look')}>${e}</button>`).join('')}</div>
-  <div class="setrow"><span class="lab">Sensor</span>${sensorChip(c)}<span class="sp"></span><span class="faint">${c.raw} ±${c.sd}</span></div>
+  <div class="setrow"><span class="lab">Sensor</span>${sensorChip(c)}<span class="sp"></span><span class="faint">S${c.in + 1} · ${c.raw} ±${c.sd}</span></div>
   <div class="setrow"><span class="lab">Valve</span>${valveSvg(c.vState, 28)}<b>${vWord}</b><span class="sp"></span><button class="switch" role="switch" aria-checked="${c.vState === 2}" data-a="valve" aria-label="valve"${vBusy ? ' disabled' : ''}></button></div>
   ${potGraph(ch)}
   <div class="setrow"><span class="lab">Now</span><input class="num" id="wml" type="number" inputmode="numeric" step="10" min="10" ${max ? `max="${max}"` : ''} value="${ml}" style="width:90px" aria-label="mL now"><span>mL</span><button class="btn primary sp" data-a="water"${dis(`water:${ch}`)}>💧 Water · <span id="wmlb">${ml}</span> mL</button></div>
@@ -383,8 +394,12 @@ async function setLook(chs, patch, label) {
 
 // ---------------------------------------------------------------- render
 const focusIn = (el) => { const a = document.activeElement; return a && el.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName); };
+// A redraw between finger-down and finger-up replaces the button under the finger and the tap is lost (the pot sheet's ✕
+// did not close on the phone: live updates redraw the sheet). So no redraw while pressed — it runs right after the tap.
+let pressed = 0, deferred = null;
 function render(force) {
   if (!state) return;
+  if (pressed && Date.now() - pressed < 3000) { deferred = { force: !!force || !!(deferred && deferred.force) }; return; }
   const conn = connState(state.device, Date.now()), c = $('#conn');
   c.className = `conn ${conn}`; c.lastElementChild.textContent = ago(state.device.lastSeen);
   $('#fw').textContent = state.device.fw ? `fw ${state.device.fw}` : '';
@@ -407,6 +422,8 @@ const mEdit = () => (sheet && sheet.type === 'pot' && state.rules ? (sheet.ps = 
 // Dragging a moisture knob (pointer events; a drag of > 4 px is not a tap); saved on release
 let mDrag = { k: null, moved: false };
 function onPointer(e) {
+  if (e.type === 'pointerdown') pressed = Date.now();
+  else if (e.type !== 'pointermove' && pressed) { pressed = 0; if (deferred) { const f = deferred.force; deferred = null; setTimeout(() => render(f), 0); } }
   if (e.type === 'pointerdown') { const k = e.target.closest('[data-a="m-knob"]'); mDrag = { k: k && mEdit() ? k.dataset.k : null, x0: e.clientX, moved: false }; return; }
   if (!mDrag.k) return;
   if (e.type !== 'pointermove') { mDrag.k = null; if (mDrag.moved) savePot(); return; }
@@ -430,6 +447,20 @@ async function onClick(e) {
     case 'run-ask': { const b = bannerPlan(); if (b) openSheet({ type: 'run', plan: b.plan.id }); break; }
     case 'run': { const p = Rules.planById(state.rules, sheet.plan); sheet = null; render(true); cmd('run', { plan: p.id }, 'run', `▶ ${p.name}`); break; }
     case 'stop': cmd('stop', {}, 'stop', '■ STOP'); break;
+    case 'find': find = find ? null : { step: 0 }; render(true); break;
+    case 'find-x': find = null; render(true); break;
+    case 'find-again': find = { step: 0 }; render(true); break;
+    case 'find-read': {
+      const f = find, rec = await cmd('refresh', {}, 'find', '🔎', true), r = rec && rec.status === 'acked' ? rec.result || {} : null;
+      if (!r || find !== f) break;
+      if (!Array.isArray(r.raw) || !Array.isArray(r.sd)) { toast('✕ fw 0.7.0'); break; }
+      if (f.step === 0) { f.a = r; f.step = 1; } else { f.b = r; f.hit = findSensor(f.a, f.b); f.step = 2; }
+      render(true); break; }
+    case 'find-save': {
+      const p = +$('#fpot').value, inp = state.ch[find.hit.k].in;
+      if (state.ch[p].in === inp) { toast(`Pot ${p + 1} · S${inp + 1} ✓`); find = null; render(true); break; }
+      const rec = await cmd('sensor_in', { ch: p, input: inp }, 'sensor_in', `Pot ${p + 1} ← S${inp + 1}`);
+      if (rec && rec.status === 'acked') { find = null; render(true); } break; }
     case 'vall': cmd('valves_all', { open: v === '1' }, 'valves_all', v === '1' ? 'Open all' : 'Close all'); break;
     case 'pump': if (v === '1') cmd('pump', { on: true }, 'pump', 'Pump'); else cmd('pump', { on: false }, 'pumpoff', 'Pump off'); break;
     // pot sheet
