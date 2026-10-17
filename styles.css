@@ -45,6 +45,7 @@ h2 { font-size: 20px; margin: 0; }
 .topbar { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: 10px; padding: 10px 16px; }
 .topbar h1 { font-size: 22px; margin: 0; flex: 1; }
 .conn { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; white-space: nowrap; }
+.conn .fw { font-size: 11px; font-weight: 400; color: var(--text-3); }
 .conn .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); }
 .conn.stale .dot { background: var(--amber); } .conn.offline .dot { background: var(--red); }
 .downbar { background: var(--amber-soft); color: var(--amber); font-weight: 700; font-size: 14px; padding: 6px 16px; }

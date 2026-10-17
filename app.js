@@ -387,6 +387,7 @@ function render(force) {
   if (!state) return;
   const conn = connState(state.device, Date.now()), c = $('#conn');
   c.className = `conn ${conn}`; c.lastElementChild.textContent = ago(state.device.lastSeen);
+  $('#fw').textContent = state.device.fw ? `fw ${state.device.fw}` : '';
   $('#downbar').hidden = !state.backendDown;
   const host = $('#screen-home');
   if (force || !focusIn(host)) host.innerHTML = chartCard() + stationCard();
