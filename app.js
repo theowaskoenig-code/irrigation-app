@@ -30,7 +30,7 @@ const thrOfCh = (ch) => (planOfCh(ch) ? Rules.thrOf(Rules.potSet(state.rules, ch
 const nowOf = (ch) => (Number.isInteger(lookOf(ch).now) ? lookOf(ch).now : 250);              // the pot's Water now amount (household, app only)
 const fitted = (c) => c.valEn || c.senEn;
 const firstValve = () => Math.max(0, state.ch.findIndex(c => c.valEn));
-const ctx = () => ({ maxDoseML: state.t.maxDoseML || 0, tankLeft: state.t.tankLeft, tankReserve: state.t.tankReserve, frost: frostBlocks(state.t) });
+const ctx = () => ({ maxDoseML: state.t.maxDoseML || 0, tankLeft: state.t.tankLeft, tankReserve: state.t.tankReserve, frost: frostBlocks(state.t), rainTodayMM: rainToday(state.t) });
 // What a pot looks like now: run · nos (no sensor) · bad (implausible) · uncal · dry · wet (above its wet level) · ok
 function look(ch) {
   const c = state.ch[ch], r = state.t.running;
@@ -141,7 +141,7 @@ function chartSvg(h, from) {
     if (i === ti) s += `<text x="${mid(i)}" y="${yL(l) - 3}" text-anchor="middle" font-size="9" font-weight="700" fill="var(--accent)">${l.toFixed(1)}</text>`; });
   if (ti >= 0) s += `<rect x="${x(ti) + 1}" y="1" width="${dx - 2}" height="${P1 - 2}" fill="none" stroke="var(--accent)" stroke-width="2" rx="2"/>`;
   s += `<line x1="${CL}" x2="${CW - CR}" y1="${P1}" y2="${P1}" stroke="var(--border)"/>`;
-  return `<svg viewBox="0 0 ${CW} ${P1 + 2}" width="100%" role="img" aria-label="litres watered per day, rain, day and night temperature">${s}</svg>`;
+  return `<svg viewBox="0 0 ${CW} ${P1 + 2}" width="100%" data-a="rain" role="button" aria-label="litres watered per day, rain, day and night temperature — rain setting">${s}</svg>`;
 }
 
 // ---------------------------------------------------------------- Home: plan banner + spider + buttons
@@ -152,7 +152,7 @@ function bannerPlan() {
   return { plan: p || Rules.planById(r, r.default), at };
 }
 function banner() {
-  const b = bannerPlan(), frost = frostBlocks(state.t) ? '<span class="frost" aria-label="frost">❄</span>' : '';
+  const b = bannerPlan(), frost = (frostBlocks(state.t) ? '<span class="frost" aria-label="frost">❄</span>' : '') + (Rules.rainSkips(state.rules, rainToday(state.t)) ? '<span class="frost" aria-label="rain">☔</span>' : '');
   if (!b) return `<button class="banner" data-a="plans"><b>Plan</b><span class="chip nos">none</span>${frost}<span class="sp"></span><span>+</span></button>`;
   const on = Rules.isOn(b.plan);
   return `<button class="banner" data-a="plans"><b>${esc(b.plan.name)}</b><span class="chip ${on ? 'ok' : 'nos'}">${on ? 'on' : 'off'}</span>${b.at ? `<span>next ${whenLabel(b.at)}</span>` : ''}${frost}<span class="sp"></span><span aria-hidden="true">›</span></button>`;
@@ -266,7 +266,16 @@ function potPlanCard(ch) {
   return `<div class="card"><div class="row wrap"><b>Plan</b>${pick}<span class="faint">${esc(plan.times.join(' · ') || '▶')}</span></div>
     ${blind ? '<div class="row"><span class="chip dry">⚠</span><span class="faint">no sensor · every time</span></div>' : `<div id="mline">${moistLine(ps)}</div>
     <div class="row wrap">${ps.mode === 'range' ? '' : `<div class="seg" style="width:150px"><button data-a="mode" data-v="min" aria-pressed="${ps.mode === 'min'}">Min</button><button data-a="mode" data-v="max" aria-pressed="${ps.mode === 'max'}">Max</button></div>`}<span class="sp"></span><span id="mtext">${moistText(ps)}</span></div>`}
-    <div class="row wrap"><input class="num" id="pml" type="number" inputmode="numeric" step="10" min="10" ${max ? `max="${max}"` : ''} value="${ps.ml}" style="width:90px" aria-label="mL plan"><span>mL</span>${[250, 500, 900].map(v => `<button class="btn sm ${ps.ml === v ? 'on' : ''}" data-a="pml" data-v="${v}">${v}</button>`).join('')}${max && ps.ml > max ? `<span class="faint">→ ${max}</span>` : ''}</div></div>`;
+    <div class="row wrap"><input class="num" id="pml" type="number" inputmode="numeric" step="10" min="10" ${max ? `max="${max}"` : ''} value="${ps.ml}" style="width:90px" aria-label="mL plan"><span>mL</span>${[250, 500, 900].map(v => `<button class="btn sm ${ps.ml === v ? 'on' : ''}" data-a="pml" data-v="${v}">${v}</button>`).join('')}${max && ps.ml > max ? `<span class="faint">→ ${max}</span>` : ''}</div>
+    ${r.rainMM ? `<div class="row"><span>☔ rain reaches this pot</span><span class="sp"></span><button class="switch" role="switch" aria-checked="${ps.rain !== false}" data-a="pot-rain" aria-label="rain reaches this pot"></button></div>` : ''}</div>`;
+}
+// Rain (tap the weather chart): skip the pots rain reaches while today's rain ≥ the limit (plan document rainMM, fw 0.8.0)
+function rainSheet() {
+  const r = state.rules, on = !!(r && r.rainMM), board = rainToday(state.t), w = weatherDays().find(d => d.day === dayStart(Date.now(), 0));
+  const today = board !== null ? board : w ? w.mm : null, skips = on && Rules.rainSkips(r, board);
+  return `${head('Rain')}
+  <div class="setrow"><span class="lab">☔ Skip</span><span>today ≥</span><input class="num" id="rainmm" type="number" inputmode="numeric" min="1" max="50" step="1" value="${on ? r.rainMM : 5}" style="width:64px" aria-label="mm"${on ? '' : ' disabled'}><span>mm</span><span class="sp"></span><button class="switch" role="switch" aria-checked="${on}" data-a="rain-on" aria-label="rain skip"${dis('rules')}></button></div>
+  <div class="row"><span class="faint">today</span><b>${today === null ? '—' : `${today} mm`}</b>${on ? `<span class="chip ${skips ? 'wet' : 'ok'}">${skips ? '☔ skip' : 'water'}</span>` : ''}${on && board === null ? '<span class="faint">board: —</span>' : ''}</div>`;
 }
 // Send the pot's setting (sheet.ps) with the whole plan document.
 async function savePot() {
@@ -342,7 +351,7 @@ const mVal = (e) => { const r = $('#mline svg').getBoundingClientRect(); return 
 const clampThr = (v) => Math.max(1, Math.min(99, v));
 function drawMoist(p) { $('#mline').innerHTML = moistLine(p); const t = $('#mtext'); if (t) t.textContent = moistText(p); }
 const moistText = (p) => (p.mode === 'min' ? `💧 if drier than ${p.thr} %` : p.mode === 'max' ? `💧 unless wetter than ${p.thr} %` : `💧 from below ${p.min} % up to ${p.max} %`);
-const PV_ICON = { wet: '●', nosensor: '⚠', implausible: '✕', uncal: '?', tank: '▮', frost: '❄', off: '—' };
+const PV_ICON = { wet: '●', nosensor: '⚠', implausible: '✕', uncal: '?', tank: '▮', frost: '❄', rain: '☔', off: '—' };
 function previewRow(items) {
   if (!items.length) return '<div class="pv"><span>—</span></div>';
   return `<div class="pv">${items.map(it => `<span class="${it.action === 'water' ? 'w' : it.why === 'wet' ? '' : 'x'}" title="${esc(reasonText(it.why))}"><b>${it.ch + 1}</b>${it.action === 'water' ? `💧${it.ml}` : PV_ICON[it.why] || '·'}</span>`).join('')}</div>`;
@@ -408,7 +417,7 @@ function render(force) {
   const sh = $('#sheet');
   sh.hidden = !sheet; document.body.style.overflow = sheet ? 'hidden' : '';
   if (sheet && (force || !focusIn(sh))) {
-    const top = sh.scrollTop, fn = { pot: potSheet, tank: tankSheet, plans: plansSheet, run: runSheet, runs: runsSheet }[sheet.type];
+    const top = sh.scrollTop, fn = { pot: potSheet, tank: tankSheet, plans: plansSheet, run: runSheet, runs: runsSheet, rain: rainSheet }[sheet.type];
     sh.innerHTML = `<div class="in">${fn()}</div>`; sh.scrollTop = top;
   }
 }
@@ -460,6 +469,9 @@ async function onClick(e) {
       if (state.ch[p].in === inp) { toast(`Pot ${p + 1} · S${inp + 1} ✓`); find = null; render(true); break; }
       const rec = await cmd('sensor_in', { ch: p, input: inp }, 'sensor_in', `Pot ${p + 1} ← S${inp + 1}`);
       if (rec && rec.status === 'acked') { find = null; render(true); } break; }
+    case 'rain': openSheet({ type: 'rain' }); break;
+    case 'rain-on': { if (!state.rules) break; const d = clone(state.rules); if (d.rainMM) delete d.rainMM; else d.rainMM = 5; sendRules(d); break; }
+    case 'pot-rain': { const p = mEdit(); if (!p) break; p.rain = p.rain === false; savePot(); break; }
     case 'vall': cmd('valves_all', { open: v === '1' }, 'valves_all', v === '1' ? 'Open all' : 'Close all'); break;
     case 'pump': if (v === '1') cmd('pump', { on: true }, 'pump', 'Pump'); else cmd('pump', { on: false }, 'pumpoff', 'Pump off'); break;
     // pot sheet
@@ -540,6 +552,7 @@ function onChange(e) {
   else if (f === 'plan') { const d = clone(state.rules); d.pots = Rules.setPot(d, sheet.ch, t.value); sendRules(d); }
   else if (f === 'tanksize') { const L = +String(t.value).replace(',', '.'); if (L > 0) cmd('tanksize', { ml: Math.round(L * 1000) }, 'tanksize', `Tank ${L} L`); }
   else if (f === 'fch') sheet.fch = +t.value;
+  else if (t.id === 'rainmm') { const v = Math.round(+t.value); if (!(v >= 1 && v <= 50)) { toast('✕ 1 – 50 mm'); render(true); return; } const d = clone(state.rules); d.rainMM = v; sendRules(d); }
   else if (t.id === 'pml') { const v = Math.round(+t.value), p = mEdit(); if (!p) return; if (!(v >= 10)) { toast('✕ ≥ 10 mL'); render(true); return; } p.ml = v; savePot(); }
 }
 

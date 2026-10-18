@@ -138,5 +138,31 @@ eq('frost does not hide wet', R.decide(min, C({ pct: 80 }), { ...X, frost: true 
   eq('preview unknown', R.preview(DOC, 'z', chs, X), []);
 }
 
+// ---- rain skip (firmware 0.8.0): rainMM 1-50 + pot rain:false; serialized only when set; decide/preview skip pots rain reaches
+{
+  const base = R.normalize(DOC);
+  eq('rain: no keys = same text', R.compile({ ...base }), R.compile(base));
+  const r = { ...base, rainMM: 5, pot: base.pot.map((p, i) => (i === 1 ? { ...p, rain: false } : p)) };
+  eq('rain: valid', R.validate(r), null);
+  eq('rain: rainMM 0 refused', R.validate({ ...r, rainMM: 0 }), 'rainMM');
+  eq('rain: rainMM 51 refused', R.validate({ ...r, rainMM: 51 }), 'rainMM');
+  eq('rain: pot rain must be boolean', R.validate({ ...r, pot: r.pot.map((p, i) => (i ? p : { ...p, rain: 1 })) }), 'pot[0].rain');
+  const t = R.compile(r);
+  eq('rain: rainMM last', t.endsWith(',"rainMM":5}'), true);
+  eq('rain: only rain:false written', (t.match(/"rain":false/g) || []).length, 1);
+  eq('rain: rain:true dropped', R.compile({ ...r, pot: r.pot.map(p => ({ ...p, rain: true })) }).includes('"rain":'), false);
+  eq('rain: hash = board (host test)', R.hash(R.compile({ v: 3, plans: [{ id: 'a', name: 'Default', on: true, times: ['07:00', '19:00'] }], default: 'a', pots: {},
+    rainMM: 5, pot: Array.from({ length: 16 }, (_, i) => ({ mode: 'min', thr: 35, min: 35, max: 60, ml: 250, ...(i === 2 || i === 9 ? { rain: false } : {}) })) })), '8f9dfad0');
+  const ctx = { maxDoseML: 1620, tankLeft: 15000, tankReserve: 500, frost: false };
+  const dry = { valEn: true, senEn: true, sState: 0, pct: 10 };
+  eq('rain: skips a pot rain reaches', R.decide(R.potSet(r, 0), dry, { ...ctx, rain: true }).why, 'rain');
+  eq('rain: waters a pot under a roof', R.decide(R.potSet(r, 1), dry, { ...ctx, rain: true }).action, 'water');
+  eq('rain: rainSkips at the limit', R.rainSkips(r, 5), true);
+  eq('rain: rainSkips below / unknown / off', [R.rainSkips(r, 4.9), R.rainSkips(r, null), R.rainSkips(base, 30)], [false, false, false]);
+  const pv = R.preview(r, 'a', Array.from({ length: 16 }, () => dry), { ...ctx, rainTodayMM: 8 });
+  eq('rain: preview', pv.filter(x => x.why === 'rain').length, pv.filter(x => x.ch !== 1).length);
+  eq('rain: preview without rain', R.preview(r, 'a', Array.from({ length: 16 }, () => dry), { ...ctx, rainTodayMM: 2 }).some(x => x.why === 'rain'), false);
+}
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

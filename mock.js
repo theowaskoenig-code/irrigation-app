@@ -23,7 +23,7 @@ function createMockBackend(config) {
       raw: 0, pct: -1, sd: 0, sState: 1, vState: 1, vOpenUs: 2500, vClosedUs: 1300, todayML: 0, lastML: 0, lastTs: 0, lastWhy: '', filling: false });
   }
   const b = { fw: '0.5.0-mock', mlPerSec: 30.0, tankFullML: 25000, tankLeft: 15300, pumpRunning: false, pumpEn: true, havePCA: true,
-    running: null, queue: [], frostMinC: frostQ ? 1.5 : 8.5, frostAt: Date.now() - 20 * 60e3, up: 3 * 86400,
+    running: null, queue: [], frostMinC: frostQ ? 1.5 : 8.5, frostAt: Date.now() - 20 * 60e3, rainTodayMM: 6.2, rainAt: Date.now() - 25 * 60e3, up: 3 * 86400,
     rules: Rules.upgrade({ v: 2, plans: [
       { id: 'a', name: 'Default', on: true, times: ['07:00', '19:00'], mode: 'min', thr: 49, min: 35, max: 60, dose: 900 },
       { id: 'b', name: 'Herbs', on: false, times: ['08:30'], mode: 'max', thr: 70, min: 35, max: 60, dose: 250 }],
@@ -77,7 +77,7 @@ function createMockBackend(config) {
     return { fw: b.fw, up: b.up, mlPerSec: b.mlPerSec, maxDoseML: maxDose(), maxPumpMs: MAX_PUMP_MS, tankLeft: b.tankLeft, tankFullML: b.tankFullML,
       tankReserve: RESERVE, pumpRunning: b.pumpRunning, pumpEn: b.pumpEn, rulesHash: b.rulesHash,
       planNext: nt ? Math.floor(nt.t / 1000) : 0, planNextId: nt ? nt.plan.id : '', running: b.running, queue: b.queue.slice(),
-      frostMinC: b.frostMinC, frostAgeS: Math.round((Date.now() - b.frostAt) / 1000),
+      frostMinC: b.frostMinC, frostAgeS: Math.round((Date.now() - b.frostAt) / 1000), rainTodayMM: b.rainTodayMM, rainAgeS: Math.round((Date.now() - b.rainAt) / 1000),
       ch: chs.map(c => ({ in: c.in, senEn: c.senEn, valEn: c.valEn, raw: c.raw, pct: c.pct, sd: c.sd, sState: c.sState, air: c.air, water: c.water,
         soilDry: c.soilDry, soilWet: c.soilWet, vState: c.vState, vOpenUs: c.vOpenUs, vClosedUs: c.vClosedUs, todayML: c.todayML,
         lastML: c.lastML, lastTs: c.lastTs ? Math.floor(c.lastTs / 1000) : 0, lastWhy: c.lastWhy, filling: c.filling })) };
@@ -121,7 +121,7 @@ function createMockBackend(config) {
   async function round(planId) {
     const plan = Rules.planById(b.rules, planId); if (!plan) return { ok: false, reason: 'no_plan' };
     abort = false; readAll(); autoFit(); await closeOthers(-1);
-    const ctx = () => ({ maxDoseML: maxDose(), tankLeft: b.tankLeft, tankReserve: RESERVE, frost: frostNow() });
+    const ctx = () => ({ maxDoseML: maxDose(), tankLeft: b.tankLeft, tankReserve: RESERVE, frost: frostNow(), rainTodayMM: b.rainTodayMM, rain: Rules.rainSkips(b.rules, b.rainTodayMM) });
     const plan0 = Rules.preview(b.rules, planId, chs, ctx());
     b.queue = plan0.filter(x => x.action === 'water').map(x => x.ch); emit();
     let watered = 0, skipped = 0, refused = 0;
@@ -131,7 +131,7 @@ function createMockBackend(config) {
       c.lastWhy = d.why; c.filling = d.filling;
       b.queue = b.queue.filter(x => x !== item.ch);
       if (d.action === 'water') { const r = await dose(item.ch, d.ml, planId); watered++; if (!r.ok) break; }
-      else if (['wet', 'off', 'nosensor', 'frost'].includes(d.why)) skipped++;     // as the board: these are skips, the rest is refused + an event
+      else if (['wet', 'off', 'nosensor', 'frost', 'rain'].includes(d.why)) skipped++;     // as the board: these are skips, the rest is refused + an event
       else { refused++; pushEvent({ kind: 'refused', ch: item.ch, reason: d.why, pct: c.pct }); }
     }
     b.queue = []; pushEvent({ kind: 'round', plan: planId, trigger: 'cmd', watered, skipped, refused, tankLeft: b.tankLeft }); emit();
@@ -188,6 +188,7 @@ function createMockBackend(config) {
         if (o !== a.ch) ['in', 'air', 'water', 'soilDry', 'soilWet', 'senEn', 'autoOff', '_plug', '_air', '_water', '_true'].forEach(k => { const t = c[k]; c[k] = d[k]; d[k] = t; });
         readCh(c); readCh(d); return { ok: true, ch: a.ch, input: a.input, other: o, otherInput: d.in }; }
       case 'frost': b.frostMinC = +a.tMinC; b.frostAt = Date.now(); return { ok: true };
+      case 'rain': b.rainTodayMM = +a.mm; b.rainAt = Date.now(); return { ok: true, rainTodayMM: b.rainTodayMM };
       default: return { ok: false, reason: 'unknown_cmd' };
     }
   }

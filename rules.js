@@ -5,7 +5,8 @@
 //     plans: [ { id: "a", name: "Default", on: true, times: ["07:00","19:00"], dailyML?: 6000 } ],   // a plan = WHEN only
 //     default: "a",
 //     pots: { "6": "b", "10": "off" },        // 0-based ch → plan id or "off"; absent = the default plan
-//     pot: [ { mode: "min" | "max" | "range", thr: 49, min: 35, max: 60, ml: 250 } × 16 ] }   // per pot (index = ch): moisture + plan amount
+//     pot: [ { mode: "min" | "max" | "range", thr: 49, min: 35, max: 60, ml: 250, rain?: false } × 16 ],   // per pot (index = ch): moisture + plan amount
+//     rainMM?: 5 }                            // skip pots rain reaches (rain !== false) while today's rain >= rainMM (firmware 0.8.0)
 //
 // v2 (firmware ≤ 0.5.1) carried mode/thr/min/max/dose on each plan; upgrade() hands them to the plan's pots, as the board does at boot.
 // mode min   = water a pot when it is drier than thr
@@ -73,7 +74,9 @@ function validate(o) {
     if (!pctIn(q.max, 1, 100)) return `${at}.max`;
     if (q.mode === 'range' && q.min >= q.max) return `${at}.min`;
     if (!Number.isInteger(q.ml) || q.ml < 10 || q.ml > 100000) return `${at}.ml`;
+    if (q.rain !== undefined && typeof q.rain !== 'boolean') return `${at}.rain`;
   }
+  if (o.rainMM !== undefined && !pctIn(o.rainMM, 1, 50)) return 'rainMM';
   return null;
 }
 // Canonical shape and key order = the board's rulesSerialize() byte for byte (same rulesHash). Pots pointing at the default are
@@ -88,8 +91,10 @@ function normalize(o) {
   const pots = {};
   Object.keys(o.pots || {}).map(Number).sort((a, b) => a - b).forEach(ch => { const v = o.pots[ch]; if (v !== o.default) pots[ch] = v; });
   const pot = [];
-  for (let ch = 0; ch < N_CH; ch++) { const q = potSet(o, ch); pot.push({ mode: q.mode, thr: q.thr, min: q.min, max: q.max, ml: q.ml }); }
-  return { v: 3, plans, default: o.default, pots, pot };
+  for (let ch = 0; ch < N_CH; ch++) { const q = potSet(o, ch), e = { mode: q.mode, thr: q.thr, min: q.min, max: q.max, ml: q.ml }; if (q.rain === false) e.rain = false; pot.push(e); }
+  const out = { v: 3, plans, default: o.default, pots, pot };
+  if (o.rainMM) out.rainMM = o.rainMM;
+  return out;
 }
 function compile(rules) { return JSON.stringify(normalize(rules)); }
 // fromJSON(string|object) → { ok, rules, error }.
@@ -153,7 +158,8 @@ function sensorWhy(c) {
 // decide(ps, c, ctx) → { action: 'water'|'skip', why, ml?, filling }
 //   ps  = the pot's setting (potSet: mode, thr, min, max, ml)
 //   c   = one channel (state.ch[i]: senEn, valEn, sState, pct, filling?)
-//   ctx = { maxDoseML, tankLeft, tankReserve, frost (true while the forecast low blocks watering) }
+//   ctx = { maxDoseML, tankLeft, tankReserve, frost (true while the forecast low blocks watering),
+//           rain (true while today's rain >= the plan's rainMM — skips pots with ps.rain !== false) }
 // filling = the pot's range-mode flag AFTER this decision (the board persists it).
 function decide(ps, c, ctx) {
   const was = !!c.filling, skip = (why, filling) => ({ action: 'skip', why, filling: filling === undefined ? was : filling });
@@ -170,14 +176,19 @@ function decide(ps, c, ctx) {
     }
   }
   if (ctx.frost) return skip('frost');
+  if (ctx.rain && ps.rain !== false) return skip('rain');
   let ml = ps.ml, why = 'watered';
   if (ctx.maxDoseML > 0 && ml > ctx.maxDoseML) { ml = ctx.maxDoseML; why = 'cap_trim'; }
   if (ctx.tankLeft - ml < ctx.tankReserve) return skip('tank');
   return { action: 'water', why, ml, filling };
 }
+// rainSkips(rules, rainTodayMM) → true while today's rain (fresh, or null) reaches the plan's rainMM
+function rainSkips(rules, mm) { return !!(rules && rules.rainMM && mm !== null && mm !== undefined && mm >= rules.rainMM); }
 // preview(rules, planId, chs, ctx) → [{ ch, action, why, ml? }] for every pot with a fitted valve on that plan (tank counted down).
+// ctx.rainTodayMM (null = unknown/stale) gives ctx.rain from the plan's rainMM.
 function preview(rules, planId, chs, ctx) {
   if (!planById(rules, planId)) return [];
+  ctx = Object.assign({}, ctx, { rain: rainSkips(rules, ctx.rainTodayMM) });
   let tank = ctx.tankLeft; const out = [];
   chs.forEach((c, ch) => {
     if (!c.valEn || potPlanId(rules, ch) !== planId) return;
@@ -189,6 +200,6 @@ function preview(rules, planId, chs, ctx) {
 }
 
 const Rules = { IDS, N_CH, MAX_TIMES, POT_DEFAULT, isTime, isOn, newPlan, empty, potSet, setPotSet, upgrade, validate, normalize, compile, fromJSON, hash,
-  planById, potPlanId, planOf, nextId, thrOf, togglePot, setPot, triggersBetween, nextTrigger, sensorWhy, decide, preview };
+  planById, potPlanId, planOf, nextId, thrOf, togglePot, setPot, triggersBetween, nextTrigger, sensorWhy, decide, rainSkips, preview };
 if (typeof module !== 'undefined' && module.exports) module.exports = Rules; else root.Rules = Rules;
 })(typeof window !== 'undefined' ? window : globalThis);

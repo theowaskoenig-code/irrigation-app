@@ -48,7 +48,7 @@ function mapPayload(p) {
     running: p.running && typeof p.running === 'object' && Number.isInteger(p.running.ch)
       ? { plan: s(p.running.plan), ch: p.running.ch, ml: n(p.running.ml, 0), target: n(p.running.target, 0) } : null,
     queue: Array.isArray(p.queue) ? p.queue.filter(Number.isInteger) : [],
-    frostMinC: n(p.frostMinC, null), frostAgeS: n(p.frostAgeS, null),
+    frostMinC: n(p.frostMinC, null), frostAgeS: n(p.frostAgeS, null), rainTodayMM: n(p.rainTodayMM, null), rainAgeS: n(p.rainAgeS, null),
   };
   const src = Array.isArray(p.ch) ? p.ch : [], ch = [];
   for (let i = 0; i < N_CH; i++) {
@@ -63,11 +63,13 @@ function mapPayload(p) {
 }
 // True while the forecast low blocks every dose (Addendum 1: fresh < 6 h and below 3 °C).
 function frostBlocks(t) { return t.frostMinC !== null && t.frostAgeS !== null && t.frostAgeS < FROST_FRESH_S && t.frostMinC < FROST_C; }
+// Today's rain sum the board holds (fw 0.8.0, pushed hourly by the cloud), or null when unknown or stale (> 6 h) — as the board decides.
+function rainToday(t) { return t.rainTodayMM !== null && t.rainTodayMM !== undefined && t.rainAgeS !== null && t.rainAgeS < FROST_FRESH_S ? t.rainTodayMM : null; }
 
 // Reason codes → a short label (toasts, preview chips). One table for every backend.
 const REASON_TEXT = {
   wet: 'wet', nosensor: 'no sensor', implausible: 'sensor fault', uncal: 'not calibrated', tank: 'tank reserve', cap_trim: 'trimmed to max',
-  off: 'not fitted', nopca: 'no valve driver', too_much: 'over max', frost: 'frost', bad_rules: 'plan refused', no_plan: 'no plan',
+  off: 'not fitted', nopca: 'no valve driver', too_much: 'over max', frost: 'frost', rain: 'rain', bad_rules: 'plan refused', no_plan: 'no plan',
   budget: 'daily limit', estop: 'stopped', pump_disabled: 'pump off', badargs: 'bad value', not_recorded: 'not recorded', refused: 'refused',
   expired: 'expired', busy: 'busy', timeout: 'no answer', transport: 'unreachable', unknown_cmd: 'unknown command', aborted: 'stopped',
 };
@@ -131,4 +133,4 @@ function findSensor(a, b) {
   const m = a.raw.map((x, i) => ({ i, d: ok(a, i) && ok(b, i) ? Math.abs(x - b.raw[i]) : 0 })).filter(x => x.d >= FIND_MIN).sort((x, y) => y.d - x.d);
   return m.length && (m.length === 1 || m[1].d < m[0].d / 2) ? { k: m[0].i, d: m[0].d } : { k: -1, moved: m.map(x => x.i) };
 }
-if (typeof module !== 'undefined') module.exports = { mapPayload, frostBlocks, connState, historyFromLocal, runsFromEvents, reasonText, dayStart, findSensor };   // backend.test.js
+if (typeof module !== 'undefined') module.exports = { mapPayload, frostBlocks, rainToday, connState, historyFromLocal, runsFromEvents, reasonText, dayStart, findSensor };   // backend.test.js
