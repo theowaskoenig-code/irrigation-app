@@ -71,7 +71,12 @@ async function cmd(name, args, key, label, quiet) {
 }
 const dis = (key) => (busy.has(key) ? ' disabled' : '');
 const intOf = (sel) => { const el = $(sel), v = el && el.value.trim() !== '' ? Math.round(+el.value) : NaN; return Number.isFinite(v) && v > 0 ? v : null; };
-const sendRules = (doc) => cmd('rules', Rules.normalize(doc), 'rules', 'Plan');
+// The board answers with the hash of what it stored: a different hash = it kept something else (fw ≤ 0.8.0 dropped pot/pots sent over the cloud).
+async function sendRules(doc) {
+  const rec = await cmd('rules', Rules.normalize(doc), 'rules', 'Plan', true), want = Rules.hash(Rules.compile(doc));
+  if (rec && rec.status === 'acked') toast(rec.result && rec.result.rulesHash && rec.result.rulesHash !== want ? '✕ Plan · the board kept another version' : 'Plan ✓', 4000);
+  return rec && rec.status === 'acked' && rec.result && rec.result.rulesHash && rec.result.rulesHash !== want ? { ...rec, status: 'failed' } : rec;
+}
 
 // ---------------------------------------------------------------- history cache
 function hist(key, fn) {
