@@ -164,5 +164,24 @@ eq('frost does not hide wet', R.decide(min, C({ pct: 80 }), { ...X, frost: true 
   eq('rain: preview without rain', R.preview(r, 'a', Array.from({ length: 16 }, () => dry), { ...ctx, rainTodayMM: 2 }).some(x => x.why === 'rain'), false);
 }
 
+// ---- plan defaults (app side): stored defaults win; else the first pot without own values; withDefaults spares own/off pots
+{
+  const base = R.normalize(DOC), none = () => false;
+  const firstA = [...Array(16).keys()].find(ch => R.potPlanId(base, ch) === 'a');
+  eq('planDefault: derived from the first pot', R.planDefault(base, null, none, 'a'), (({ mode, thr, min, max, ml }) => ({ mode, thr, min, max, ml }))(R.potSet(base, firstA)));
+  eq('planDefault: stored wins', R.planDefault(base, { mode: 'max', thr: 70, min: 30, max: 80, ml: 400 }, none, 'a'), { mode: 'max', thr: 70, min: 30, max: 80, ml: 400 });
+  eq('planDefault: bad stored ignored', R.planDefault(base, { mode: 'max', thr: 0, ml: 400 }, none, 'a').thr, R.potSet(base, firstA).thr);
+  eq('planDefault: empty plan → POT_DEFAULT', R.planDefault({ ...base, pots: {} }, null, () => true, 'a'), (({ mode, thr, min, max, ml }) => ({ mode, thr, min, max, ml }))(R.POT_DEFAULT));
+  const def = { mode: 'max', thr: 75, min: 19, max: 85, ml: 300 }, own = (ch) => ch === firstA;
+  const r = { ...base, pot: base.pot.map((p, i) => (i === 0 ? { ...p, rain: false } : p)) };
+  const out = R.withDefaults(r, (id) => (id === 'a' ? def : R.planDefault(r, null, own, id)), own);
+  const onA = [...Array(16).keys()].filter(ch => R.potPlanId(r, ch) === 'a' && !own(ch));
+  eq('withDefaults: plan pots get the defaults', onA.every(ch => out[ch].thr === 75 && out[ch].ml === 300 && out[ch].mode === 'max'), true);
+  eq('withDefaults: own pot unchanged', out[firstA], R.potSet(r, firstA));
+  eq('withDefaults: off pot unchanged', out[10], R.potSet(r, 10));
+  eq('withDefaults: rain flag kept', out[0].rain === false || R.potPlanId(r, 0) !== 'a', true);
+  eq('withDefaults: result valid', R.validate({ ...r, pot: out }), null);
+}
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

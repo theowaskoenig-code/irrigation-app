@@ -66,18 +66,44 @@ function validate(o) {
   }
   if (o.pot !== undefined && (!Array.isArray(o.pot) || o.pot.length > N_CH)) return 'pot';
   for (let i = 0; i < (o.pot || []).length; i++) {
-    const q = Object.assign({}, POT_DEFAULT, o.pot[i]), at = `pot[${i}]`;
-    if (!o.pot[i] || typeof o.pot[i] !== 'object') return at;
-    if (!['min', 'max', 'range'].includes(q.mode)) return `${at}.mode`;
-    if (!pctIn(q.thr, 1, 99)) return `${at}.thr`;
-    if (!pctIn(q.min, 1, 99)) return `${at}.min`;
-    if (!pctIn(q.max, 1, 100)) return `${at}.max`;
-    if (q.mode === 'range' && q.min >= q.max) return `${at}.min`;
-    if (!Number.isInteger(q.ml) || q.ml < 10 || q.ml > 100000) return `${at}.ml`;
-    if (q.rain !== undefined && typeof q.rain !== 'boolean') return `${at}.rain`;
+    if (!o.pot[i] || typeof o.pot[i] !== 'object') return `pot[${i}]`;
+    const err = potErr(Object.assign({}, POT_DEFAULT, o.pot[i]), `pot[${i}]`); if (err) return err;
   }
   if (o.rainMM !== undefined && !pctIn(o.rainMM, 1, 50)) return 'rainMM';
   return null;
+}
+// One pot setting (or a plan's defaults) → the first bad field, or null. The board's ranges.
+function potErr(q, at) {
+  if (!['min', 'max', 'range'].includes(q.mode)) return `${at}.mode`;
+  if (!pctIn(q.thr, 1, 99)) return `${at}.thr`;
+  if (!pctIn(q.min, 1, 99)) return `${at}.min`;
+  if (!pctIn(q.max, 1, 100)) return `${at}.max`;
+  if (q.mode === 'range' && q.min >= q.max) return `${at}.min`;
+  if (!Number.isInteger(q.ml) || q.ml < 10 || q.ml > 100000) return `${at}.ml`;
+  if (q.rain !== undefined && typeof q.rain !== 'boolean') return `${at}.rain`;
+  return null;
+}
+// ---- plan defaults (Theo 2026-10-19): a plan gives its pots a default moisture rule + mL; a pot can carry its own values.
+// The board only ever sees each pot's finished setting (pot[]); the defaults and the "own" marks live in the household
+// (pot_look.plans[id], pot_look[ch].own) and are applied here before the document is sent.
+const DEF_KEYS = ['mode', 'thr', 'min', 'max', 'ml'];
+function pickDef(o) { const d = {}; DEF_KEYS.forEach(k => { d[k] = o[k]; }); return d; }
+// planDefault(rules, stored, ownOf, id): the stored defaults if valid, else the setting of the plan's first pot without own
+// values (what the board does today), else POT_DEFAULT.
+function planDefault(rules, stored, ownOf, id) {
+  if (stored && typeof stored === 'object' && !potErr(Object.assign({}, POT_DEFAULT, stored), 'def')) return pickDef(Object.assign({}, POT_DEFAULT, stored));
+  for (let ch = 0; ch < N_CH; ch++) if (potPlanId(rules, ch) === id && !ownOf(ch)) return pickDef(potSet(rules, ch));
+  return pickDef(POT_DEFAULT);
+}
+// withDefaults(rules, defOf, ownOf) → pot[] where every pot on a plan and without own values carries that plan's defaults
+// (defOf(id) → defaults); its rain flag is kept. Pots off or with own values are unchanged.
+function withDefaults(rules, defOf, ownOf) {
+  const a = [];
+  for (let ch = 0; ch < N_CH; ch++) {
+    const q = potSet(rules, ch), id = potPlanId(rules, ch);
+    a.push(id === 'off' || ownOf(ch) || !planById(rules, id) ? q : Object.assign(q, defOf(id)));
+  }
+  return a;
 }
 // Canonical shape and key order = the board's rulesSerialize() byte for byte (same rulesHash). Pots pointing at the default are
 // dropped from pots{}; pot[] always has all 16 with thr/min/max (switching Min/Max ⇄ Range keeps a value); dailyML only when set.
@@ -195,6 +221,6 @@ function preview(rules, planId, chs, ctx) {
 }
 
 const Rules = { IDS, N_CH, MAX_TIMES, POT_DEFAULT, isTime, isOn, newPlan, empty, potSet, setPotSet, upgrade, validate, normalize, compile, fromJSON, hash,
-  planById, potPlanId, planOf, nextId, thrOf, togglePot, setPot, triggersBetween, nextTrigger, sensorWhy, decide, rainSkips, preview };
+  planById, potPlanId, planOf, nextId, thrOf, togglePot, setPot, triggersBetween, nextTrigger, sensorWhy, decide, rainSkips, preview, potErr, planDefault, withDefaults };
 if (typeof module !== 'undefined' && module.exports) module.exports = Rules; else root.Rules = Rules;
 })(typeof window !== 'undefined' ? window : globalThis);
