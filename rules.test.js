@@ -84,9 +84,9 @@ eq('potSet default when absent', R.potSet({ v: 3 }, 3), R.POT_DEFAULT);
 eq('setPotSet patches one pot', R.setPotSet(DOC, 2, { ml: 300 }).map(p => p.ml).slice(0, 4), [900, 900, 300, 900]);
 eq('setPotSet keeps the document', DOC.pot[2].ml, 900);
 eq('togglePot default → b', R.togglePot(DOC, 0, 'b'), { 0: 'b', 6: 'b', 10: 'off' });
-eq('togglePot b → back', R.togglePot(DOC, 6, 'b'), { 10: 'off' });
+eq('togglePot b → off', R.togglePot(DOC, 6, 'b'), { 6: 'off', 10: 'off' });
 eq('togglePot off → default', R.togglePot(DOC, 10, 'a'), { 6: 'b' });
-eq('togglePot default stays', R.togglePot(DOC, 0, 'a'), { 6: 'b', 10: 'off' });
+eq('togglePot default → off', R.togglePot(DOC, 0, 'a'), { 0: 'off', 6: 'b', 10: 'off' });
 eq('setPot off', R.setPot(DOC, 1, 'off'), { 1: 'off', 6: 'b', 10: 'off' });
 eq('setPot default', R.setPot(DOC, 6, 'a'), { 10: 'off' });
 

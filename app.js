@@ -169,6 +169,8 @@ function lastRunBanner() {
   if (!r) return `<button class="banner last" data-a="runs"><b>Last run</b><span class="faint">—</span><span class="sp"></span><span aria-hidden="true">›</span></button>`;
   return `<button class="banner last" data-a="runs"><b>Last run</b><span>${whenLabel(r.ts)}</span><span>💧 ${r.watered}</span><span>${litres(r.ml)} L</span>${r.refused ? `<span class="chip bad">✕ ${r.refused}</span>` : ''}<span class="sp"></span><span aria-hidden="true">›</span></button>`;
 }
+// A pot a plan waters: on a plan that is switched on (no plan document yet = every pot counts)
+const inPlan = (ch) => { const r = state.rules; if (!r) return true; const p = Rules.planOf(r, ch); return !!p && Rules.isOn(p); };
 function spiderSvg() {
   const R0 = 42, RN = 118, RL = 145, E = RL + 66, t = state.t;
   let lines = '', nodes = '';
@@ -176,11 +178,11 @@ function spiderSvg() {
     const c = state.ch[ch], a = -Math.PI / 2 + ch * Math.PI / 8, cx = Math.cos(a), cy = Math.sin(a), k = look(ch);
     const st = !c.valEn ? 'nf' : k === 'run' || (c.vState === 2 && t.pumpRunning) ? 'act' : t.queue.includes(ch) ? 'queue' : c.vState === 2 ? 'open' : 'idle';
     const line = st === 'act' || st === 'queue' || st === 'open' ? 'var(--accent)' : 'var(--border-2)';
-    const w = st === 'act' ? 5 : st === 'idle' || st === 'nf' ? 2 : 3, dash = st === 'queue' ? 'stroke-dasharray="5 4"' : st === 'nf' ? 'stroke-dasharray="2 4"' : '';
+    const inP = inPlan(ch), w = st === 'act' ? 5 : st === 'idle' || st === 'nf' ? 2 : 3, dash = st === 'queue' ? 'stroke-dasharray="5 4"' : st === 'nf' || (st === 'idle' && !inP) ? 'stroke-dasharray="2 4"' : '';
     const x = (cx * RN).toFixed(1), y = cy * RN, tone = ['dry', 'ok', 'wet', 'run'].includes(k) ? k : 'nos';
     lines += `<line x1="${(cx * R0).toFixed(1)}" y1="${(cy * R0).toFixed(1)}" x2="${x}" y2="${y.toFixed(1)}" stroke="${line}" stroke-width="${w}" stroke-linecap="round" ${dash} ${st === 'act' ? 'class="flowline"' : ''}/>`;
     const anchor = Math.abs(cx) < 0.3 ? 'middle' : cx > 0 ? 'start' : 'end', dy = cy > 0.3 ? 10 : cy < -0.3 ? -2 : 4;
-    nodes += `<g class="node" data-a="pot" data-ch="${ch}" role="button" aria-label="pot ${ch + 1} ${esc(potName(ch))}"${fitted(c) ? '' : ' opacity=".4"'}><circle cx="${x}" cy="${y.toFixed(1)}" r="20" fill="transparent"/>
+    nodes += `<g class="node" data-a="pot" data-ch="${ch}" role="button" aria-label="pot ${ch + 1} ${esc(potName(ch))}${inP ? '' : ' — not in a plan'}"${fitted(c) && inP ? '' : ' opacity=".35"'}><circle cx="${x}" cy="${y.toFixed(1)}" r="20" fill="transparent"/>
       <text x="${x}" y="${(y + 9).toFixed(1)}" text-anchor="middle" font-size="27" filter="url(#tone-${tone})">${potEmoji(ch)}</text>
       <text x="${(cx * RL).toFixed(1)}" y="${(cy * RL + dy).toFixed(1)}" text-anchor="${anchor}" font-size="11" fill="var(--text)"><tspan font-weight="700">${ch + 1}</tspan> ${esc(short(potName(ch), 9))}</text></g>`;
   }
@@ -197,7 +199,7 @@ function stationCard() {
   <div class="btns"><button class="btn primary" data-a="run-ask" ${!b || busy.has('run') || t.running ? 'disabled' : ''}>▶ Run now</button>${act ? '<button class="btn stop" data-a="stop">■ STOP</button>' : ''}</div>
   <div class="btns"><button class="btn sm" data-a="vall" data-v="1"${dis('valves_all')}>Open all</button><button class="btn sm" data-a="vall" data-v="0"${dis('valves_all')}>Close all</button>${t.pumpRunning ? `<button class="btn sm on" data-a="pump" data-v="0"${dis('pumpoff')}>Pump off</button>` : `<button class="btn sm" data-a="pump" data-v="1"${dis('pump')}>Pump on</button>`}<button class="btn sm${find ? ' on' : ''}" data-a="find">Find sensor</button></div>
   ${find ? findPanel() : ''}
-  <div class="legend"><span><span class="dot" style="background:var(--amber)"></span>dry</span><span><span class="dot" style="background:var(--green)"></span>ok</span><span><span class="dot" style="background:var(--wet)"></span>wet</span><span><span class="dot" style="background:var(--accent)"></span>watering</span><span><span class="dot" style="background:var(--text-3)"></span>no sensor</span></div></div>`;
+  <div class="legend"><span><span class="dot" style="background:var(--amber)"></span>dry</span><span><span class="dot" style="background:var(--green)"></span>ok</span><span><span class="dot" style="background:var(--wet)"></span>wet</span><span><span class="dot" style="background:var(--accent)"></span>watering</span><span><span class="dot" style="background:var(--text-3)"></span>no sensor</span><span><span style="opacity:.35">🪴</span> not in a plan</span></div></div>`;
 }
 // Find sensor: read as it is → read in water → the socket that moved, and which pot it sits in
 function findPanel() {
@@ -264,7 +266,8 @@ function potSheet() {
 function potPlanCard(ch) {
   const r = state.rules, c = state.ch[ch]; if (!r) return '<div class="setrow"><span class="lab">Plan</span><span class="faint">—</span></div>';
   if (sheet.ps && !busy.has('rules') && JSON.stringify(sheet.ps) === JSON.stringify(Rules.potSet(r, ch))) sheet.ps = null;
-  const pid = Rules.potPlanId(r, ch), ps = sheet.ps || Rules.potSet(r, ch), max = state.t.maxDoseML;
+  if (sheet.pendPlan !== undefined && Rules.potPlanId(r, ch) === sheet.pendPlan) sheet.pendPlan = undefined;   // the board's document shows it now
+  const pid = sheet.pendPlan !== undefined ? sheet.pendPlan : Rules.potPlanId(r, ch), ps = sheet.ps || Rules.potSet(r, ch), max = state.t.maxDoseML;
   const pick = `<select class="num" data-f="plan" aria-label="plan">${r.plans.map(p => `<option value="${p.id}" ${pid === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}<option value="off" ${pid === 'off' ? 'selected' : ''}>off</option></select>`;
   if (pid === 'off') return `<div class="setrow"><span class="lab">Plan</span>${pick}</div>`;
   const plan = Rules.planById(r, pid), blind = Rules.sensorWhy(c);
@@ -554,7 +557,10 @@ function onInput(e) {
 function onChange(e) {
   const t = e.target, f = t.dataset.f;
   if (f === 'name') backend.setPotName(sheet.ch, t.value.trim().slice(0, 24)).catch(err => toast(`✕ ${err.message}`));
-  else if (f === 'plan') { const d = clone(state.rules); d.pots = Rules.setPot(d, sheet.ch, t.value); sendRules(d); }
+  else if (f === 'plan') {   // the choice stays on screen until the board's document shows it (the board picks commands up every 15 s)
+    const s0 = sheet, v = t.value, d = clone(state.rules); d.pots = Rules.setPot(d, s0.ch, v); s0.pendPlan = v;
+    sendRules(d).then(rec => { if (!(rec && rec.status === 'acked') && s0.pendPlan === v) { s0.pendPlan = undefined; render(true); } });
+  }
   else if (f === 'tanksize') { const L = +String(t.value).replace(',', '.'); if (L > 0) cmd('tanksize', { ml: Math.round(L * 1000) }, 'tanksize', `Tank ${L} L`); }
   else if (f === 'fch') sheet.fch = +t.value;
   else if (t.id === 'rainmm') { const v = Math.round(+t.value); if (!(v >= 1 && v <= 50)) { toast('✕ 1 – 50 mm'); render(true); return; } const d = clone(state.rules); d.rainMM = v; sendRules(d); }

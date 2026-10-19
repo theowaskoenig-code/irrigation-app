@@ -120,13 +120,8 @@ function planOf(rules, ch) { const id = potPlanId(rules, ch); return id === 'off
 function nextId(rules) { return IDS.find(id => !planById(rules, id)) || null; }
 // The "dry below" line of a pot's setting, for pictures (graph line, spider colour): min/max → thr, range → min.
 function thrOf(ps) { return !ps ? null : ps.mode === 'range' ? ps.min : ps.thr; }
-// pots{} after a tap on pot ch in plan id's chips: on another plan / off → here; on this plan → back to the default.
-function togglePot(rules, ch, id) {
-  const pots = Object.assign({}, rules.pots || {}), cur = potPlanId(rules, ch);
-  if (cur === id && id === rules.default) return pots;
-  if (cur === id || id === rules.default) delete pots[ch]; else pots[ch] = id;
-  return pots;
-}
+// Plan editor chip: a pot in this plan → off (no plan waters it); any other pot → this plan. Same pots{} as the pot view's picker.
+function togglePot(rules, ch, id) { return setPot(rules, ch, potPlanId(rules, ch) === id ? 'off' : id); }
 // Assign pot ch to a plan id or 'off' (the pot view's picker).
 function setPot(rules, ch, id) { const pots = Object.assign({}, rules.pots || {}); if (id === rules.default) delete pots[ch]; else pots[ch] = id; return pots; }
 
