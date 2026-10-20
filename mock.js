@@ -74,7 +74,7 @@ function createMockBackend(config) {
   // ---- the payload the board would post (contract names) → the app's state ----
   function payload() {
     const nt = Rules.nextTrigger(b.rules, Date.now());
-    return { fw: b.fw, up: b.up, mlPerSec: b.mlPerSec, maxDoseML: maxDose(), maxPumpMs: MAX_PUMP_MS, tankLeft: b.tankLeft, tankFullML: b.tankFullML,
+    return { fw: b.fw, up: b.up, mlPerSec: b.mlPerSec, maxDoseML: maxDose(), maxWaterML: 10000, maxPumpMs: MAX_PUMP_MS, tankLeft: b.tankLeft, tankFullML: b.tankFullML,
       tankReserve: RESERVE, pumpRunning: b.pumpRunning, pumpEn: b.pumpEn, rulesHash: b.rulesHash,
       planNext: nt ? Math.floor(nt.t / 1000) : 0, planNextId: nt ? nt.plan.id : '', running: b.running, queue: b.queue.slice(),
       frostMinC: b.frostMinC, frostAgeS: Math.round((Date.now() - b.frostAt) / 1000), rainTodayMM: b.rainTodayMM, rainAgeS: Math.round((Date.now() - b.rainAt) / 1000),
@@ -153,7 +153,7 @@ function createMockBackend(config) {
         if (!b.havePCA) return { ok: false, reason: 'nopca' };
         const ml = Math.round(+a.ml);
         if (!(ml > 0)) return { ok: false, reason: 'too_much', maxDoseML: maxDose() };
-        if (ml > maxDose()) return { ok: false, reason: 'too_much', maxDoseML: maxDose() };
+        if (ml > 10000) return { ok: false, reason: 'too_much', maxDoseML: 10000 };   // fw 0.9.0: split into ≤ 90 s runs
         if (frostNow()) return { ok: false, reason: 'frost' };
         if (b.tankLeft - ml < RESERVE) return { ok: false, reason: 'tank' };
         return dose(a.ch, ml, '');
