@@ -21,7 +21,7 @@ function createLanBackend(config) {
   try { const q = new URLSearchParams(location.search).get('host'), s = ls.get('lanHost', ''); host = HOST_OK.test(q || '') ? q : HOST_OK.test(s) ? s : host; } catch (e) { /* ignore */ }
   const potNames = ls.get('potNames', {}), readings = [];
   let potLook = ls.get('potLook', {});
-  let state = { device: { id: config.deviceId, fw: '', ip: host, rssi: 0, up: 0, lastSeen: 0, intervalS: 2 }, ...mapPayload({}), rules: null, potNames, potLook, mark: null, events: [] };
+  let state = { device: { id: config.deviceId, fw: '', ip: host, rssi: 0, up: 0, lastSeen: 0, intervalS: 2 }, ...mapPayload({}), rules: null, potNames, potLook, mark: null, events: [], pending: [] };
 
   async function http(path, opts) {
     const ac = new AbortController(), t = setTimeout(() => ac.abort(), TIMEOUT_MS);
@@ -135,6 +135,7 @@ function createLanBackend(config) {
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
     sendCommand,
     async setPotName(ch, name) { if (name) potNames[ch] = name; else delete potNames[ch]; ls.set('potNames', potNames); subs.forEach(fn => fn(state)); },
+    async cancelCommand() { return false; },   // the LAN runs a command at once — nothing waits in a queue
     async setPotLook(look) { potLook = look; state = { ...state, potLook }; ls.set('potLook', potLook); subs.forEach(fn => fn(state)); },
     async history(days, endOffsetDays) { return historyFromLocal(readings, state.events || [], days, Date.now(), endOffsetDays || 0); },
     async runs(days) { return runsFromEvents(state.events || [], dayStart(Date.now(), -(days - 1))); },

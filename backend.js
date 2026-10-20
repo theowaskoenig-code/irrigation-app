@@ -7,6 +7,7 @@
 //   sendCommand(cmd, args)      → { status: 'acked'|'failed'|'expired'|'sent', result }  (app/SPEC.md Part 2 = the contract)
 //   setPotName(ch, name)        household pot names
 //   setPotLook(look)            household picture + wet level per pot, the whole map {ch: {e, wet}}
+//   cancelCommand(id)           take a command the box has not picked up off the queue → true (cloud only; else false)
 //   history(days, endOffsetDays) → { days, from, perDay:[{day, ml, n}], tank:[{ts, ml}], refills:[ts], levels:[ts] }
 //   potHistory(ch, days)        → { moisture:[{ts, pct}], doses:[{ts, ml}] }
 //   runs(days)                  → plan rounds, newest first: [{ts, plan, trigger, watered, skipped, refused, ml, tankLeft, pots:[{ch, ml, pct, why}]}]
@@ -48,7 +49,7 @@ function mapPayload(p) {
     running: p.running && typeof p.running === 'object' && Number.isInteger(p.running.ch)
       ? { plan: s(p.running.plan), ch: p.running.ch, ml: n(p.running.ml, 0), target: n(p.running.target, 0) } : null,
     queue: Array.isArray(p.queue) ? p.queue.filter(Number.isInteger) : [],
-    frostMinC: n(p.frostMinC, null), frostAgeS: n(p.frostAgeS, null), rainTodayMM: n(p.rainTodayMM, null), rainAgeS: n(p.rainAgeS, null),
+    maxWaterML: n(p.maxWaterML, null), frostMinC: n(p.frostMinC, null), frostAgeS: n(p.frostAgeS, null), rainTodayMM: n(p.rainTodayMM, null), rainAgeS: n(p.rainAgeS, null),
   };
   const src = Array.isArray(p.ch) ? p.ch : [], ch = [];
   for (let i = 0; i < N_CH; i++) {

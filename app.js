@@ -27,13 +27,18 @@ const wetOf = (ch) => (Number.isFinite(lookOf(ch).wet) ? lookOf(ch).wet : WET_DE
 const short = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 const planOfCh = (ch) => (state.rules ? Rules.planOf(state.rules, ch) : null);
 const thrOfCh = (ch) => (planOfCh(ch) ? Rules.thrOf(Rules.potSet(state.rules, ch)) : null);   // the pot's "dry below" line while it is on a plan
+// The largest Water now: fw 0.9.0 waters in several ≤ 90 s runs (maxWaterML); older firmware one run (maxDoseML)
+const waterMax = () => state.t.maxWaterML || state.t.maxDoseML || 0;
+// A Water command for pot ch that the box has not answered yet (cloud list, survives a reload) → { id, ml, status } | null
+const waitingWater = (ch) => (state.pending || []).find(p => p.cmd === 'water' && p.ch === ch) || null;
 const ownOf = (ch) => !!lookOf(ch).own;                                                             // the pot carries its own moisture + mL (household)
 const planDefOf = (id, rules) => Rules.planDefault(rules || state.rules, ((state.potLook || {}).plans || {})[id], ownOf, id);   // a plan's defaults
 const defText = (d) => `${d.mode === 'range' ? `${d.min}–${d.max} %` : `${d.mode === 'min' ? 'Min' : 'Max'} ${d.thr} %`} · ${d.ml} mL`;
 const nowOf = (ch) => (Number.isInteger(lookOf(ch).now) ? lookOf(ch).now : 250);              // the pot's Water now amount (household, app only)
 const fitted = (c) => c.valEn || c.senEn;
 const firstValve = () => Math.max(0, state.ch.findIndex(c => c.valEn));
-const ctx = () => ({ maxDoseML: state.t.maxDoseML || 0, tankLeft: state.t.tankLeft, tankReserve: state.t.tankReserve, frost: frostBlocks(state.t), rainTodayMM: rainToday(state.t) });
+const ctx = () => ({ maxDoseML: waterMax(),   // fw 0.9.0: a plan dose is split, trimmed only above maxWaterML
+  tankLeft: state.t.tankLeft, tankReserve: state.t.tankReserve, frost: frostBlocks(state.t), rainTodayMM: rainToday(state.t) });
 // What a pot looks like now: run · nos (no sensor) · bad (implausible) · uncal · dry · wet (above its wet level) · ok
 function look(ch) {
   const c = state.ch[ch], r = state.t.running;
@@ -245,7 +250,7 @@ function calGuide(ch) {
 }
 function potSheet() {
   const ch = sheet.ch, c = state.ch[ch], k = look(ch), r = state.rules, max = state.t.maxDoseML;
-  const ml = sheet.ml || Math.min(nowOf(ch), max || Infinity);
+  const wmax = waterMax(), ml = sheet.ml || Math.min(nowOf(ch), wmax || Infinity), wait = waitingWater(ch);
   const pid = r ? Rules.potPlanId(r, ch) : '';
   const vBusy = busy.has(`valve:${ch}`), vWord = vBusy ? '…' : c.vState === 2 ? 'open' : c.vState === 1 ? 'closed' : '?';
   return `${head(`Pot ${ch + 1}`)}
@@ -254,7 +259,9 @@ function potSheet() {
   <div class="setrow"><span class="lab">Sensor</span>${sensorChip(c)}<span class="sp"></span><span class="faint">S${c.in + 1} · ${c.raw} ±${c.sd}</span></div>
   <div class="setrow"><span class="lab">Valve</span>${valveSvg(c.vState, 28)}<b>${vWord}</b><span class="sp"></span><button class="switch" role="switch" aria-checked="${c.vState === 2}" data-a="valve" aria-label="valve"${vBusy ? ' disabled' : ''}></button></div>
   ${potGraph(ch)}
-  <div class="setrow"><span class="lab">Now</span><input class="num" id="wml" type="number" inputmode="numeric" step="10" min="10" ${max ? `max="${max}"` : ''} value="${ml}" style="width:90px" aria-label="mL now"><span>mL</span><button class="btn primary sp" data-a="water"${dis(`water:${ch}`)}>💧 Water · <span id="wmlb">${ml}</span> mL</button></div>
+  <div class="setrow"><span class="lab">Now</span>${wait || busy.has(`water:${ch}`)
+    ? `<span class="chip run">⏳ ${wait ? wait.ml : sheet.ml || ml} mL</span><span class="faint">${wait && wait.status === 'sent' ? 'the box has it' : 'waiting for the box'}</span><span class="sp"></span>${wait && wait.status === 'queued' ? `<button class="btn sm" data-a="wcancel" data-id="${wait.id}" aria-label="cancel">✕</button>` : ''}`
+    : `<input class="num" id="wml" type="number" inputmode="numeric" step="10" min="10" ${wmax ? `max="${wmax}"` : ''} value="${ml}" style="width:90px" aria-label="mL now"><span>mL</span><button class="btn primary sp" data-a="water">💧 Water · <span id="wmlb">${ml}</span> mL</button>`}</div>
   ${potPlanCard(ch)}
   <div class="setrow"><span class="lab">Fitted</span><span>Sensor</span><button class="switch" role="switch" aria-checked="${c.senEn}" data-a="en" data-k="s" aria-label="sensor fitted"${dis(`en:s${ch}`)}></button><span>Valve</span><button class="switch" role="switch" aria-checked="${c.valEn}" data-a="en" data-k="v" aria-label="valve fitted"${dis(`en:v${ch}`)}></button></div>
   <div class="setrow"><span class="lab">Calibrate</span><button class="btn sm ${sheet.cal && sheet.cal.kind === 'air' ? 'on' : ''}" data-a="cal-open" data-k="air">Air & water</button><button class="btn sm ${sheet.cal && sheet.cal.kind === 'soil' ? 'on' : ''}" data-a="cal-open" data-k="soil">Dry & wet soil</button></div>
@@ -270,7 +277,7 @@ function potPlanCard(ch) {
   const r = state.rules, c = state.ch[ch]; if (!r) return '<div class="setrow"><span class="lab">Plan</span><span class="faint">—</span></div>';
   if (sheet.ps && !busy.has('rules') && JSON.stringify(sheet.ps) === JSON.stringify(Rules.potSet(r, ch))) sheet.ps = null;
   if (sheet.pendPlan !== undefined && Rules.potPlanId(r, ch) === sheet.pendPlan) sheet.pendPlan = undefined;   // the board's document shows it now
-  const pid = sheet.pendPlan !== undefined ? sheet.pendPlan : Rules.potPlanId(r, ch), ps = sheet.ps || Rules.potSet(r, ch), max = state.t.maxDoseML;
+  const pid = sheet.pendPlan !== undefined ? sheet.pendPlan : Rules.potPlanId(r, ch), ps = sheet.ps || Rules.potSet(r, ch), max = waterMax();   // fw 0.9.0 splits a plan dose into ≤ 90 s runs
   const pick = `<select class="num" data-f="plan" aria-label="plan">${r.plans.map(p => `<option value="${p.id}" ${pid === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}<option value="off" ${pid === 'off' ? 'selected' : ''}>off</option></select>`;
   if (pid === 'off') return `<div class="setrow"><span class="lab">Plan</span>${pick}</div>`;
   const plan = Rules.planById(r, pid), blind = Rules.sensorWhy(c), own = ownOf(ch), def = planDefOf(pid);
@@ -380,7 +387,7 @@ function planEditor() {
   <div><b>When</b>${dayLine(p.times)}</div>
   <div><b>Moisture</b><div id="mline">${moistLine(def)}</div>
     <div class="row wrap">${def.mode === 'range' ? '' : `<div class="seg" style="width:150px"><button data-a="mode" data-v="min" aria-pressed="${def.mode === 'min'}">Min</button><button data-a="mode" data-v="max" aria-pressed="${def.mode === 'max'}">Max</button></div>`}<span class="sp"></span><span id="mtext">${moistText(def)}</span></div></div>
-  <div class="row wrap"><b>Amount</b><input class="num" id="dml" type="number" inputmode="numeric" step="10" min="10" ${state.t.maxDoseML ? `max="${state.t.maxDoseML}"` : ''} value="${def.ml}" style="width:90px" aria-label="mL default"><span>mL</span>${[250, 500, 900].map(v => `<button class="btn sm ${def.ml === v ? 'on' : ''}" data-a="dml" data-v="${v}">${v}</button>`).join('')}</div>
+  <div class="row wrap"><b>Amount</b><input class="num" id="dml" type="number" inputmode="numeric" step="10" min="10" ${waterMax() ? `max="${waterMax()}"` : ''} value="${def.ml}" style="width:90px" aria-label="mL default"><span>mL</span>${[250, 500, 900].map(v => `<button class="btn sm ${def.ml === v ? 'on' : ''}" data-a="dml" data-v="${v}">${v}</button>`).join('')}</div>
   <div class="pchips">${chips}</div>
   ${sheet.test ? previewRow(sheet.test) : ''}
   <div class="btns"><button class="btn" data-a="plan-test">Test now</button><button class="btn primary" data-a="plan-apply"${dis('rules')}>Apply</button></div>`;
@@ -504,7 +511,8 @@ async function onClick(e) {
     case 'pump': if (v === '1') cmd('pump', { on: true }, 'pump', 'Pump'); else cmd('pump', { on: false }, 'pumpoff', 'Pump off'); break;
     // pot sheet
     case 'valve': { const open1 = state.ch[ch].vState !== 2; cmd('valve', { ch, open: open1 }, `valve:${ch}`, `Valve ${ch + 1}`); break; }
-    case 'water': { const ml = intOf('#wml'), max = state.t.maxDoseML; if (!ml || (max && ml > max)) { toast(`✕ 10 – ${max || '…'} mL`); break; } sheet.ml = ml; if (ml !== nowOf(ch)) setLook([ch], { now: ml }, null); cmd('water', { ch, ml }, `water:${ch}`, `Pot ${ch + 1}`); break; }
+    case 'wcancel': { const ok = await backend.cancelCommand(el.dataset.id).catch(() => false); toast(ok ? 'Water cancelled ✓' : '✕ the box has it already — ■ STOP ends it', 4000); render(true); break; }
+    case 'water': { if (waitingWater(ch) || busy.has(`water:${ch}`)) break; const ml = intOf('#wml'), max = waterMax(); if (!ml || (max && ml > max)) { toast(`✕ 10 – ${max || '…'} mL`); break; } sheet.ml = ml; if (ml !== nowOf(ch)) setLook([ch], { now: ml }, null); cmd('water', { ch, ml }, `water:${ch}`, `Pot ${ch + 1}`); break; }
     case 'en': { const k = el.dataset.k, c = state.ch[ch], on = !(k === 's' ? c.senEn : c.valEn); cmd('en', { what: `${k}${ch + 1}`, on }, `en:${k}${ch}`, `${k === 's' ? 'Sensor' : 'Valve'} ${ch + 1}`); break; }
     case 'cal-open': { const k = el.dataset.k; sheet.cal = sheet.cal && sheet.cal.kind === k ? null : { kind: k, step: 0, a: null, b: null }; render(true); if (sheet.cal) cmd('refresh', {}, 'refresh', '↻', true); break; }
     case 'refresh': cmd('refresh', {}, 'refresh', '↻', true); break;

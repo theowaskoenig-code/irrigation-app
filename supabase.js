@@ -30,6 +30,9 @@ function createSupabaseBackend(config) {
     config: () => client().from('device_config').select('ts,payload').eq('device_id', id).maybeSingle(),
     mark: () => client().from('events').select('ts,detail').eq('device_id', id).in('kind', ['refill', 'level']).order('ts', { ascending: false }).limit(1).maybeSingle(),
     household: () => client().from('household').select('pot_names,pot_look,weather').eq('id', 1).maybeSingle(),
+    // commands the box has not answered yet (water / pump …): the app shows "waiting" from these, also after a reload (2026-10-20)
+    pending: () => client().from('commands').select('id,cmd,args,status,created_at').eq('device_id', id).in('status', ['queued', 'sent'])
+      .in('cmd', ['water', 'pump', 'pump_test', 'run']).gt('created_at', new Date(Date.now() - 5 * 60e3).toISOString()).order('created_at'),
   };
   const ALL = Object.keys(fetchers);
   function refresh(keys) {
@@ -48,6 +51,7 @@ function createSupabaseBackend(config) {
       t: m.t, ch: m.ch, rules: cp.rules && typeof cp.rules === 'object' ? cp.rules : null,
       potNames: hh.pot_names || {}, potLook: hh.pot_look || {}, weatherLoc: hh.weather && Number.isFinite(hh.weather.lat) ? hh.weather : null,
       mark: mk ? { ts: ms(mk.ts), tankLeft: mk.detail && mk.detail.tankLeft } : null,
+      pending: (raw.pending || []).map(r => ({ id: r.id, cmd: r.cmd, ch: r.args && Number.isInteger(r.args.ch) ? r.args.ch : null, ml: r.args && r.args.ml, status: r.status, ts: ms(r.created_at) })),
     };
     try { localStorage.setItem('irrigation-state', JSON.stringify(state)); } catch (e) { /* ignore */ }
   }
@@ -62,13 +66,16 @@ function createSupabaseBackend(config) {
     ch = on('device_state', ['devices', 'state'])(ch);
     ch = on('device_config', ['config'])(ch);
     ch = on('events', ['mark', 'devices'])(ch);
-    ch = on('commands', [], (p) => settle(p.new))(ch);
+    ch = on('commands', ['pending'], (p) => settle(p.new))(ch);
     ch.subscribe((s) => { live = s === 'SUBSCRIBED'; if (live) lastMsgAt = Date.now(); });
     setInterval(async () => {
       try { await refresh(live && Date.now() - lastMsgAt < 120e3 ? ['devices'] : ALL); if (state.backendDown) { state.backendDown = false; subs.forEach(fn => fn(state)); } }
       catch (e) { if (state && !state.backendDown) { state.backendDown = true; subs.forEach(fn => fn(state)); } }
     }, 20000);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(ALL).catch(() => {}); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { refresh(ALL).catch(() => {}); ping(); } });
+    // while the app is open the box checks for commands every 3 s instead of 15 s (household.app_seen → commands poll_s, fw 0.9.0)
+    const ping = () => { if (document.visibilityState === 'visible') client().rpc('app_ping').then(() => {}, () => {}); };
+    ping(); setInterval(ping, 30000);
   }
 
   return {
@@ -99,6 +106,13 @@ function createSupabaseBackend(config) {
         };
         setTimeout(tick, 3000);
       });
+    },
+    // ✕ on a waiting command: only while the box has not taken it (true = taken off the queue)
+    async cancelCommand(cid) {
+      const { data, error } = await client().rpc('cancel_command', { p_id: cid });
+      if (error) throw new Error(error.message);
+      await refresh(['pending']);
+      return data === true;
     },
     async setPotName(ch, name) {
       const names = { ...(state.potNames || {}) }; if (name) names[ch] = name; else delete names[ch];
